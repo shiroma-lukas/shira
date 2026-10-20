@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shira: an AI agent team for your codebase</title>
+<meta name="description" content="Shira turns issues into reviewed pull requests. AI agents work in isolated sandboxes; humans decide and merge. Open source under Apache-2.0.">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<style>
+  :root {
+    --bg: #fbfaf8; --surface: #ffffff; --text: #1d1b19; --muted: #625d57; --line: #e6e1da;
+    --accent: #3d5afe; --accent-ink: #ffffff; --code-bg: #f3f0eb; --ok: #1f7a4d;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #121110; --surface: #1b1a18; --text: #ede9e3; --muted: #a39d95; --line: #2e2b28;
+      --accent: #8c9eff; --accent-ink: #0e0d0c; --code-bg: #24221f; --ok: #6fd3a0;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 17px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  a { color: var(--accent); }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 0 20px; }
+  header.top { display: flex; align-items: center; justify-content: space-between; padding: 22px 0; }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 20px; color: var(--text); text-decoration: none; }
+  .brand svg { width: 28px; height: 28px; }
+  nav a { color: var(--muted); text-decoration: none; margin-left: 20px; font-size: 15px; }
+  nav a:hover { color: var(--text); }
+  .hero { padding: 56px 0 40px; }
+  .hero h1 { font-size: clamp(34px, 6vw, 56px); line-height: 1.08; letter-spacing: -0.02em; margin: 0 0 18px; max-width: 16ch; }
+  .hero p.lead { font-size: clamp(18px, 2.4vw, 21px); color: var(--muted); max-width: 60ch; margin: 0 0 28px; }
+  .cta { display: flex; flex-wrap: wrap; gap: 12px; }
+  .btn { display: inline-block; padding: 12px 20px; border-radius: 10px; font-weight: 600; text-decoration: none; border: 1px solid var(--line); color: var(--text); background: var(--surface); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  section { padding: 44px 0; border-top: 1px solid var(--line); }
+  h2 { font-size: 28px; letter-spacing: -0.01em; margin: 0 0 8px; }
+  .sub { color: var(--muted); margin: 0 0 28px; max-width: 62ch; }
+  .flow { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; counter-reset: step; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 20px; }
+  .flow .card::before { counter-increment: step; content: counter(step); display: inline-grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; background: var(--code-bg); font-weight: 700; font-size: 14px; margin-bottom: 10px; }
+  .card h3 { margin: 0 0 6px; font-size: 18px; }
+  .card p { margin: 0; color: var(--muted); font-size: 15.5px; }
+  .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr)); gap: 14px; }
+  pre { background: var(--code-bg); border-radius: 12px; padding: 16px 18px; overflow-x: auto; font: 14px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; margin: 0; }
+  .ok { color: var(--ok); }
+  .tiers { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; }
+  .tier ul { margin: 12px 0 0; padding-left: 20px; color: var(--muted); font-size: 15.5px; }
+  .tag { display: inline-block; font-size: 12px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 2px 10px; margin-bottom: 10px; }
+  footer { padding: 32px 0 48px; border-top: 1px solid var(--line); color: var(--muted); font-size: 14px; }
+  @media (max-width: 560px) { nav a:not(.gh) { display: none; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <a class="brand" href="#">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="currentColor" opacity=".9"/><path d="M21.5 11.2c-1.2-1.6-3.1-2.4-5.3-2.4-3 0-5.2 1.6-5.2 4 0 2.6 2.4 3.4 5 4 2.3.5 3.4 1 3.4 2.2 0 1.2-1.3 2-3.3 2-1.9 0-3.4-.8-4.3-2.2" fill="none" style="stroke: var(--bg)" stroke-width="2.6" stroke-linecap="round"/></svg>
+      Shira
+    </a>
+    <nav>
+      <a href="#how">How it works</a>
+      <a href="#safety">Safety</a>
+      <a href="#cloud">Shira Cloud</a>
+      <a class="gh" href="https://github.com/shiroma-lukas/shira">GitHub</a>
+    </nav>
+  </header>
+
+  <div class="hero">
+    <h1>An AI agent team that turns issues into pull requests.</h1>
+    <p class="lead">You describe the work in an issue. Shira's agents fix it in an isolated sandbox, run your tests, and open a pull request with the evidence and the cost. People discuss, decide, and merge. Agents do the work.</p>
+    <div class="cta">
+      <a class="btn primary" href="https://github.com/shiroma-lukas/shira">View on GitHub</a>
+      <a class="btn" href="#cloud">Shira Cloud</a>
+    </div>
+  </div>
+
+  <section id="how">
+    <h2>How it works</h2>
+    <p class="sub">One task, one branch, one isolated workspace. Every step is recorded, so the reasoning behind any pull request can be reconstructed.</p>
+    <div class="flow">
+      <div class="card"><h3>Point it at an issue</h3><p><code>shira submit --issue 12</code>. The agent gets the issue's full text and a budget.</p></div>
+      <div class="card"><h3>An agent works in a sandbox</h3><p>A fresh clone in its own container. It edits, runs commands, and commits, but can't push.</p></div>
+      <div class="card"><h3>The platform checks the work</h3><p>Rebase on main, run your test suite, scan the diff for secrets. In code, not by asking the agent nicely.</p></div>
+      <div class="card"><h3>You review the PR</h3><p>Summary, test evidence, and cost in the description; <code>Fixes #12</code> links the issue. Merging is yours.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>What a run looks like</h2>
+    <p class="sub">A real run on our <a href="https://github.com/shiroma-lukas/shira-playground">playground repository</a>: a bug report about letters like ß and ø breaking URL slugs, fixed end to end.</p>
+    <pre><span class="ok">$</span> shira submit --repo shiroma-lukas/shira-playground --issue 3
+queued   worker   "Resolve issue #3: Slugs break on letters that don't decompose"
+
+<span class="ok">$</span> shira show 5d1c5dff
+done     PR #4  "Transliterate non-decomposing letters in slugify"
+  attempts 1, spend $0.02 of $5 budget, 13,139 tokens
+  tests passed after rebase · diff scanned for secrets: none found</pre>
+  </section>
+
+  <section id="safety">
+    <h2>Built to be trusted with your code</h2>
+    <p class="sub">Agents run untrusted code by nature. Shira assumes that and contains it.</p>
+    <div class="grid2">
+      <div class="card"><h3>gVisor sandboxes</h3><p>Each task runs in its own gVisor container with every Linux capability dropped and hard CPU, memory, and time limits.</p></div>
+      <div class="card"><h3>Allowlisted egress only</h3><p>Sandboxes have no route to the internet. One proxy lets each sandbox reach only its allowlisted hosts, and never private or cloud-metadata addresses.</p></div>
+      <div class="card"><h3>Agents can't push or merge</h3><p>Git credentials are short-lived, scoped to one repository, and used only by the platform after the agent has exited.</p></div>
+      <div class="card"><h3>Budgets with hard stops</h3><p>Per-task dollar, token, and time limits, a monthly ceiling, and a kill switch that pauses every agent at once.</p></div>
+    </div>
+  </section>
+
+  <section id="cloud">
+    <h2>Open source, or let us run it</h2>
+    <p class="sub">The agent platform is open source. Shira Cloud operates it for you.</p>
+    <div class="tiers">
+      <div class="card tier">
+        <span class="tag">Open source · Apache-2.0</span>
+        <h3>Shira</h3>
+        <p>Self-host on one Linux machine with Docker and gVisor.</p>
+        <ul>
+          <li>Agents, sandboxes, egress proxy, CLI</li>
+          <li>GitHub App integration and issue linking</li>
+          <li>Cost ledger, budgets, kill switch, audit log</li>
+        </ul>
+      </div>
+      <div class="card tier">
+        <span class="tag">Coming soon</span>
+        <h3>Shira Cloud</h3>
+        <p>Managed sandbox fleets on AWS, hosted by us or in your own AWS account.</p>
+        <ul>
+          <li>Isolated deployment per customer</li>
+          <li>Bring your own cloud: your code never leaves your account</li>
+          <li>Upgrades, backups, and operations handled</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    Shira is open source under the Apache License 2.0. "Shira" is a trademark of its authors.
+    · <a href="https://github.com/shiroma-lukas/shira">Source</a>
+    · <a href="https://github.com/shiroma-lukas/shira/blob/main/docs/prd.md">Product requirements</a>
+  </footer>
+</div>
+</body>
+</html>
