@@ -4,7 +4,8 @@ apiVersion: shira/v1
 kind: Repo
 repo: example-org/example-repo
 defaultBranch: main
-image: node:22-bookworm
+# Must include git, coreutils, util-linux, procps, and the harness: build FROM images/worker.
+image: shira-worker:latest
 setup:
   - corepack enable
   - pnpm install --frozen-lockfile

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { HarnessAdapter, ResumeInput, RunOutcome, SessionHandle, StartInput } from "../src/contracts/adapter.js";
 import type { Reply } from "../src/contracts/index.js";
 import type { CodeHost } from "../src/dispatcher/pr.js";
-import { sh } from "../src/sandbox/local.js";
+import { sh } from "../src/sandbox/process.js";
 
 export type StepInput = (StartInput | ResumeInput) & {
   exec: (cmd: string) => Promise<string>;

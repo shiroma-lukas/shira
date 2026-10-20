@@ -1,4 +1,10 @@
-# Local development database. Tests don't need it (they use PGlite).
+# Local stack: Postgres, plus the egress proxy and the internal network sandboxes run on.
+# Tests don't need it (they use PGlite).
+#
+#   docker compose up -d --wait                      # Postgres only
+#   pnpm build:egress
+#   export SHIRA_EGRESS_ADMIN_TOKEN=$(openssl rand -hex 24)
+#   docker compose --profile sandbox up -d --build --wait
 services:
   postgres:
     image: postgres:17
@@ -15,5 +21,26 @@ services:
       interval: 1s
       timeout: 3s
       retries: 30
+
+  egress:
+    profiles: [sandbox]
+    build:
+      context: .
+      dockerfile: images/egress-proxy/Dockerfile
+    environment:
+      SHIRA_EGRESS_ADMIN_TOKEN: ${SHIRA_EGRESS_ADMIN_TOKEN:-}
+    ports:
+      - "127.0.0.1:8080:8080" # admin API, host only
+    networks:
+      default: {}
+      sandbox:
+        aliases: [shira-egress]
+
+networks:
+  # No route to the internet: the egress proxy is the only way out.
+  sandbox:
+    name: shira-sandbox
+    internal: true
+
 volumes:
   shira-pg:

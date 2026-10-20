@@ -9,7 +9,7 @@ import { migrate } from "../db/migrate.js";
 import { Ledger } from "../ledger/ledger.js";
 import { submit } from "../queue/intake.js";
 import { Settings } from "../queue/settings.js";
-import { runDispatcher } from "./dispatch.js";
+import { runDispatcher, type SandboxMode } from "./dispatch.js";
 import { TaskStore, type Task } from "../queue/store.js";
 
 const USAGE = `usage: shira <command> [options]
@@ -25,12 +25,14 @@ const USAGE = `usage: shira <command> [options]
   resume <task-id>                          requeue a paused or blocked task
   kill on|off|status                        pause or resume all agents
   budget monthly <usd>|none                 set the monthly org spend ceiling
-  dispatch --unsafe-local-sandbox           run tasks: GitHub App + Claude Code on this machine,
-                                            without isolation (your own repos only)
+  dispatch                                  run tasks in gVisor sandboxes (needs the egress proxy:
+                                            docker compose --profile sandbox up)
+           [--unsafe-runtime]               allow SHIRA_SANDBOX_RUNTIME other than runsc (e.g. runc on macOS)
+           [--unsafe-local-sandbox]         run agents directly on this machine, no isolation
 
 env: DATABASE_URL (default postgres://shira:shira@localhost:54329/shira), SHIRA_CONFIG (default ./config)
-     dispatch also needs SHIRA_GITHUB_APP_ID, SHIRA_GITHUB_PRIVATE_KEY_PATH, ANTHROPIC_API_KEY;
-     optional SHIRA_CONTEXT_DIR (default ./context-template), SHIRA_TRANSCRIPTS_DIR`;
+     dispatch needs SHIRA_GITHUB_APP_ID, SHIRA_GITHUB_PRIVATE_KEY_PATH, ANTHROPIC_API_KEY, and for
+     Docker SHIRA_EGRESS_ADMIN_TOKEN; see docs/self-hosting.md for the optional ones`;
 
 const actor = `cli:${userInfo().username}`;
 
@@ -160,9 +162,9 @@ async function main(db: Db, argv: string[]): Promise<void> {
       return;
     }
     case "dispatch": {
-      if (!rest.includes("--unsafe-local-sandbox")) {
-        fail("dispatch runs agents on this machine without isolation; pass --unsafe-local-sandbox to confirm");
-      }
+      const mode: SandboxMode = rest.includes("--unsafe-local-sandbox")
+        ? { kind: "local-unsafe" }
+        : { kind: "docker", unsafeRuntime: rest.includes("--unsafe-runtime") };
       const config = await loadConfig(process.env.SHIRA_CONFIG ?? "config");
       if (!config.ok) fail(config.errors.map((e) => `${e.file}: ${e.message}`).join("\n"));
       const stop = new AbortController();
@@ -171,7 +173,7 @@ async function main(db: Db, argv: string[]): Promise<void> {
         stop.abort();
         process.once("SIGINT", () => process.exit(130));
       });
-      await runDispatcher(db, config.config, stop.signal);
+      await runDispatcher(db, config.config, mode, stop.signal);
       return;
     }
     default:

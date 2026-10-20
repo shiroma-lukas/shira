@@ -12,7 +12,8 @@
     "test": "vitest run",
     "validate-config": "tsx src/config/validate.ts config",
     "schemas": "tsx scripts/export-schemas.ts",
-    "shira": "tsx src/cli/shira.ts"
+    "shira": "tsx src/cli/shira.ts",
+    "build:egress": "esbuild src/egress/main.ts --bundle --platform=node --format=esm --target=node22 --outfile=dist/egress-proxy.mjs"
   },
   "dependencies": {
     "pg": "^8.23.1",
@@ -23,6 +24,7 @@
     "@electric-sql/pglite": "^0.3.16",
     "@types/node": "^22.20.5",
     "@types/pg": "^8.23.1",
+    "esbuild": "^0.25.12",
     "tsx": "^4.23.15",
     "typescript": "~5.9.3",
     "vitest": "^3.2.7"

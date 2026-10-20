@@ -31,3 +31,28 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm validate-config
+
+  # The Docker sandbox under real gVisor: isolation, egress allowlist, proxy bypass, kill.
+  sandbox:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install gVisor
+        run: |
+          curl -fsSL https://gvisor.dev/archive.key | sudo gpg --dearmor -o /usr/share/keyrings/gvisor-archive-keyring.gpg
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/gvisor-archive-keyring.gpg] https://storage.googleapis.com/gvisor/releases release main" \
+            | sudo tee /etc/apt/sources.list.d/gvisor.list
+          sudo apt-get update && sudo apt-get install -y runsc
+          sudo runsc install
+          sudo systemctl restart docker
+          docker info --format '{{json .Runtimes}}'
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm vitest run test/docker.integration.test.ts
+        env:
+          SHIRA_TEST_DOCKER: "1"
+          SHIRA_TEST_DOCKER_RUNTIME: runsc
