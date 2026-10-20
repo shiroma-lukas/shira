@@ -65,6 +65,21 @@ const PERMANENT_SANDBOX_ERROR =
 
 const isPermanentGitHubError = (err: unknown) => err instanceof GitHubError && err.permanent;
 
+/**
+ * The issue comment for a paused task: the question, its options numbered as `--choice`
+ * expects (from 0), and the command that answers it. Answering from a comment needs
+ * webhooks (M2).
+ */
+export function decisionComment(taskId: string, short: string, raw: unknown): string {
+  const q = Question.safeParse(raw);
+  if (!q.success) return `Shira needs a decision to continue (${short}). See \`shira show ${taskId}\`.`;
+  const lines = [`Shira needs a ${q.data.kind} decision to continue (${short}):`, "", `> ${q.data.text}`];
+  if (q.data.options?.length) lines.push("", ...q.data.options.map((o, i) => `- \`${i}\`: ${o}`));
+  const choice = q.data.options?.length ? " --choice <n>" : "";
+  lines.push("", "Answer with:", "", "```", `shira answer ${taskId} --text "..."${choice}`, "```");
+  return lines.join("\n");
+}
+
 /** A PR whose branch passed the gate and was pushed, waiting to be opened. */
 interface PendingPr {
   type: "pr_pending";
@@ -478,17 +493,22 @@ export class Dispatcher {
     return [{ ref: task.threadRef, path }];
   }
 
-  /** Tells the issue what happened: the PR, or why the task failed. */
+  /** Tells the issue what happened: the PR, the question that needs answering, or why the task failed. */
   private async notifyIssue(task: Task, status: TaskStatus): Promise<void> {
     const ref = this.issueOf(task);
-    if (!ref || !this.deps.issues || (status !== "done" && status !== "failed")) return;
+    if (!ref || !this.deps.issues || !["done", "failed", "needs_decision"].includes(status)) return;
     const last = (await this.store.events(task.id)).findLast((e) => e.kind === "state_change");
     const spend = await this.ledger.taskSpend(task.id);
     const cost = `$${spend.usd.toFixed(2)}, ${spend.tokens.toLocaleString("en-US")} tokens`;
-    const body =
-      status === "done"
-        ? `Opened #${(last?.payload.pr as { number: number }).number} to fix this (task \`${task.id.slice(0, 8)}\`, ${cost}).`
-        : `Shira couldn't complete this (task \`${task.id.slice(0, 8)}\`, ${cost}):\n\n> ${String(last?.payload.reason ?? "unknown reason").slice(0, 500)}`;
+    const short = `task \`${task.id.slice(0, 8)}\``;
+    let body: string;
+    if (status === "done") {
+      body = `Opened #${(last?.payload.pr as { number: number }).number} to fix this (${short}, ${cost}).`;
+    } else if (status === "needs_decision") {
+      body = decisionComment(task.id, short, last?.payload.question);
+    } else {
+      body = `Shira couldn't complete this (${short}, ${cost}):\n\n> ${String(last?.payload.reason ?? "unknown reason").slice(0, 500)}`;
+    }
     await this.deps.issues.comment(ref.repo, ref.number, body);
   }
 

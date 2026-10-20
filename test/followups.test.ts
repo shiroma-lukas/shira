@@ -95,6 +95,22 @@ describe("follow-ups from the first end-to-end run", () => {
       await expect(submit(db, config, { source: "cli", requester: "t", repo: "o/r", issue: 8 }, { issues: host })).rejects.toThrow(/is closed/);
     });
 
+    it("posts the question on the issue when the task needs a decision", async () => {
+      const task = await submit(db, config, { source: "cli", requester: "t", repo: "o/r", issue: 7 }, { issues: host });
+      const ask: Step = async () => ({
+        status: "needs_decision",
+        summary: "Two ways to do it.",
+        question: { kind: "technical", text: "Rewrite or patch?", options: ["Rewrite", "Patch"], refs: [] },
+      });
+      expect(await dispatcher(new ScriptedAdapter([ask])).tick()).toMatchObject({ status: "needs_decision" });
+
+      const body = host.comments[0]!.body;
+      expect(body).toContain("Shira needs a technical decision to continue");
+      expect(body).toContain("> Rewrite or patch?");
+      expect(body).toContain("- `0`: Rewrite\n- `1`: Patch");
+      expect(body).toContain(`shira answer ${task.id} --text "..." --choice <n>`);
+    });
+
     it("comments on the issue when the task fails", async () => {
       const task = await submit(db, config, { source: "cli", requester: "t", repo: "o/r", issue: 7 }, { issues: host });
       const giveUp: Step = async () => ({ status: "failed", summary: "Cannot reproduce." });
