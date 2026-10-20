@@ -196,6 +196,43 @@ describe("Dispatcher", () => {
     expect((await store.events(task.id)).at(-1)?.payload.reason).toBe("timeout");
   });
 
+  it("runs tasks side by side with concurrency", async () => {
+    for (let i = 0; i < 3; i++) await store.create(newTask({ budget, goal: `task ${i}` }), "cli:test");
+    // Each step waits until all three are running at once, then fixes its repo.
+    let running = 0;
+    let peak = 0;
+    const together: Step = async (input) => {
+      running++;
+      peak = Math.max(peak, running);
+      const deadline = Date.now() + 10_000;
+      while (peak < 3 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 20));
+      running--;
+      return fix(input);
+    };
+    const stop = new AbortController();
+    const d = dispatcher(new ScriptedAdapter([together, together, together]));
+    const done = d.run(stop.signal, 20, 3);
+    const deadline = Date.now() + 20_000;
+    while ((await store.list({ status: "done" })).length < 3 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
+    stop.abort();
+    await done;
+
+    expect(peak).toBe(3);
+    expect(await store.list({ status: "done" })).toHaveLength(3);
+    expect(new Set(host.prs.map((p) => p.head)).size).toBe(3);
+  }, 30_000);
+
+  it("finishes in-flight tasks when stopped", async () => {
+    await store.create(newTask({ budget }), "cli:test");
+    const stop = new AbortController();
+    const slow: Step = async (input) => {
+      stop.abort(); // stop arrives while the task is running
+      return fix(input);
+    };
+    await dispatcher(new ScriptedAdapter([slow])).run(stop.signal, 20, 2);
+    expect(await store.list({ status: "done" })).toHaveLength(1);
+  });
+
   it("starts nothing once the monthly budget is spent", async () => {
     const first = await store.create(newTask({ budget }), "cli:test");
     await dispatcher(new ScriptedAdapter([fix])).tick();

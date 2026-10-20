@@ -54,7 +54,13 @@ export async function githubFromEnv(): Promise<GitHubApp> {
 }
 
 /** Runs a dispatcher with the real GitHub App and Claude Code. */
-export async function runDispatcher(db: Db, config: LoadedConfig, mode: SandboxMode, signal: AbortSignal): Promise<void> {
+export async function runDispatcher(
+  db: Db,
+  config: LoadedConfig,
+  mode: SandboxMode,
+  signal: AbortSignal,
+  concurrency = 1,
+): Promise<void> {
   const github = await githubFromEnv();
   const apiKey = required("ANTHROPIC_API_KEY"); // Claude Code runs with --bare, which ignores interactive logins.
 
@@ -73,8 +79,8 @@ export async function runDispatcher(db: Db, config: LoadedConfig, mode: SandboxM
   });
   console.log(
     mode.kind === "local-unsafe"
-      ? "dispatcher running on the local sandbox: NO isolation. Ctrl-C stops after the current task."
-      : `dispatcher running on Docker (${process.env.SHIRA_SANDBOX_RUNTIME ?? "runsc"}). Ctrl-C stops after the current task.`,
+      ? `dispatcher running on the local sandbox: NO isolation, concurrency ${concurrency}. Ctrl-C stops after the current tasks.`
+      : `dispatcher running on Docker (${process.env.SHIRA_SANDBOX_RUNTIME ?? "runsc"}), concurrency ${concurrency}. Ctrl-C stops after the current tasks.`,
   );
-  await dispatcher.run(signal);
+  await dispatcher.run(signal, undefined, concurrency);
 }

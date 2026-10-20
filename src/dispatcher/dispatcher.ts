@@ -145,12 +145,21 @@ export class Dispatcher {
     }
   }
 
-  /** Loops until `signal` aborts, sleeping `idleMs` when there is nothing to do. */
-  async run(signal: AbortSignal, idleMs = 2000): Promise<void> {
-    while (!signal.aborted) {
-      const r = await this.tick();
-      if (r.kind !== "ran") await sleep(idleMs, undefined, { signal }).catch(() => {});
-    }
+  /**
+   * Runs `concurrency` independent claim loops until `signal` aborts, each sleeping
+   * `idleMs` when there is nothing to do. The queue hands each task to one loop only,
+   * and leases are per task, so the loops need no coordination. On abort, loops stop
+   * claiming and the call resolves once every in-flight task has finished.
+   */
+  async run(signal: AbortSignal, idleMs = 2000, concurrency = 1): Promise<void> {
+    if (!Number.isInteger(concurrency) || concurrency < 1) throw new Error("concurrency must be a positive integer");
+    const loop = async () => {
+      while (!signal.aborted) {
+        const r = await this.tick();
+        if (r.kind !== "ran") await sleep(idleMs, undefined, { signal }).catch(() => {});
+      }
+    };
+    await Promise.all(Array.from({ length: concurrency }, loop));
   }
 
   private retry(task: Task, reason: string) {
