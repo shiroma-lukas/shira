@@ -72,6 +72,50 @@ describe("EgressProxy", () => {
     expect((await tunnel(proxyPort, `localhost:${echoPort}`, "sbx1:s3cret-s3cret-s3cret")).status).toMatch(/^HTTP\/1.1 407/);
   });
 
+  /** Sends one CONNECT on an open socket and resolves with the status line. */
+  const connectOn = (socket: ReturnType<typeof connect>, target: string, auth?: string) =>
+    new Promise<string>((resolve) => {
+      socket.once("data", (d) => resolve(d.toString().split("\r\n")[0]!));
+      const header = auth ? `Proxy-Authorization: Basic ${Buffer.from(auth).toString("base64")}\r\n` : "";
+      socket.write(`CONNECT ${target} HTTP/1.1\r\nHost: ${target}\r\n${header}\r\n`);
+    });
+
+  it("lets a client answer the 407 challenge on the same connection", async () => {
+    await start(true);
+    const first = await tunnel(proxyPort, `localhost:${echoPort}`);
+    expect(first.status).toMatch(/^HTTP\/1.1 407/);
+    // The connection stays open; the client retries with credentials, as git does by default.
+    expect(await connectOn(first.socket, `localhost:${echoPort}`, "sbx1:s3cret-s3cret-s3cret")).toBe("HTTP/1.1 200 Connection Established");
+    const reply = new Promise<string>((r) => first.socket.once("data", (d) => r(d.toString())));
+    first.socket.write("ping");
+    expect(await reply).toBe("ping");
+    first.socket.destroy();
+  });
+
+  it("still applies the allowlist after a challenge", async () => {
+    await start(true);
+    const first = await tunnel(proxyPort, "example.com:443");
+    expect(await connectOn(first.socket, "example.com:443", "sbx1:s3cret-s3cret-s3cret")).toMatch(/^HTTP\/1.1 403/);
+  });
+
+  it("gives up after repeated failed challenges", async () => {
+    await start(true);
+    const first = await tunnel(proxyPort, `localhost:${echoPort}`);
+    expect(await connectOn(first.socket, `localhost:${echoPort}`, "sbx1:wrong-wrong-wrong-xx")).toMatch(/^HTTP\/1.1 407/);
+    const closed = new Promise((r) => first.socket.once("close", r));
+    expect(await connectOn(first.socket, `localhost:${echoPort}`, "sbx1:still-wrong-wrong-x")).toMatch(/^HTTP\/1.1 407/);
+    await closed; // third strike: the proxy closes the connection
+  });
+
+  it("closes the connection if the follow-up isn't a CONNECT", async () => {
+    await start(true);
+    const first = await tunnel(proxyPort, `localhost:${echoPort}`);
+    const closed = new Promise((r) => first.socket.once("close", r));
+    first.socket.write("GET http://example.com/ HTTP/1.1\r\nHost: example.com\r\n\r\n");
+    await closed;
+    expect(events.at(-1)).toMatchObject({ event: "egress_denied", fields: { reason: "unauthenticated" } });
+  });
+
   it("rejects hosts outside the sandbox's allowlist", async () => {
     await start(true);
     const { status } = await tunnel(proxyPort, "example.com:443", "sbx1:s3cret-s3cret-s3cret");

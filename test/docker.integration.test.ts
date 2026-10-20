@@ -124,6 +124,16 @@ describe.skipIf(!enabled)(`Docker sandbox (${runtime})`, () => {
     expect(r.stdout).toMatch(/refs\/heads\/master/);
   }, 60_000);
 
+  it("works with clients that wait for a 407 before sending credentials", async () => {
+    // git's default (no GIT_HTTP_PROXY_AUTHMETHOD) and curl --proxy-anyauth both do this.
+    const git = await sandbox.exec("env -u GIT_HTTP_PROXY_AUTHMETHOD git ls-remote --heads https://github.com/octocat/Hello-World.git");
+    expect(git.stderr).toBe("");
+    expect(git.stdout).toMatch(/refs\/heads\/master/);
+    const curl = await sandbox.exec("curl -sS -o /dev/null -w '%{http_code}' --proxy-anyauth --max-time 20 https://registry.npmjs.org/");
+    expect(curl.code).toBe(0);
+    expect(Number(curl.stdout)).toBeLessThan(500);
+  }, 60_000);
+
   it("is refused by the proxy for other hosts", async () => {
     const r = await sandbox.exec("curl -sS -o /dev/null --max-time 20 https://example.com/");
     expect(r.code).not.toBe(0);
