@@ -163,6 +163,18 @@ describe("ClaudeCodeAdapter", () => {
     expect(await adapter.result(session)).toMatchObject({ kind: "aborted", reason: "cancelled" });
   });
 
+  it("keeps the reply and usage when storing the transcript fails", async () => {
+    const failing = new ClaudeCodeAdapter({
+      transcripts: { write: async () => Promise.reject(new Error("AccessDenied")) },
+      binary,
+    });
+    process.env.FAKE_CLAUDE_SCENARIO = "done";
+    const outcome = await failing.result(await failing.start(input));
+    expect(outcome.kind).toBe("reply");
+    expect(outcome.usage.usd).toBe(0.42);
+    expect(outcome.transcriptUri).toBe("unavailable: AccessDenied");
+  });
+
   it("stores a redacted transcript", async () => {
     const outcome = await run("done");
     const transcript = await readFile(fileURLToPath(outcome.transcriptUri), "utf8");

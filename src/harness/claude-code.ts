@@ -237,7 +237,11 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
     }
     const { code, stderr } = await s.proc.exited;
     if (stderr.trim()) lines.push(JSON.stringify({ type: "stderr", text: stderr }));
-    const transcriptUri = await this.opts.transcripts.write(s.input.envelope.task_id, s.input.runId, lines);
+    // A storage failure must not cost the run its result or its ledger entry: record why the
+    // transcript is missing and carry on.
+    const transcriptUri = await this.opts.transcripts
+      .write(s.input.envelope.task_id, s.input.runId, lines)
+      .catch((err: Error) => `unavailable: ${err.message.slice(0, 200)}`);
 
     const usage: Usage = {
       model: s.input.model,

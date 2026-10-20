@@ -54,7 +54,8 @@ Then submit work from another terminal with `pnpm shira submit --repo org/repo -
 | `DATABASE_URL` | `postgres://shira:shira@localhost:54329/shira` | Postgres |
 | `SHIRA_CONFIG` | `./config` | Agent and repo definitions |
 | `SHIRA_CONTEXT_DIR` | `./context-template` | Context repo checkout (role instructions) |
-| `SHIRA_TRANSCRIPTS_DIR` | `./.shira/transcripts` | Redacted run transcripts |
+| `SHIRA_TRANSCRIPTS_DIR` | `./.shira/transcripts` | Redacted run transcripts on local disk |
+| `SHIRA_TRANSCRIPTS_URI` | (unset) | `s3://bucket[/prefix]` stores transcripts in S3 instead (AWS credentials and region from the environment) |
 | `SHIRA_SANDBOX_RUNTIME` | `runsc` | Container runtime; anything else needs `--unsafe-runtime` |
 | `SHIRA_SANDBOX_NETWORK` | `shira-sandbox` | Internal network for sandboxes |
 | `SHIRA_EGRESS_PROXY_URL` | `http://shira-egress:3128` | Proxy address as seen from sandboxes |
