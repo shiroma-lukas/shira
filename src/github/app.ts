@@ -1,0 +1,154 @@
+import { createSign } from "node:crypto";
+import type { CodeHost } from "../dispatcher/pr.js";
+import type { RepoAccess, RepoCredentials } from "../sandbox/sandbox.js";
+
+/** Installation token permissions per access level. Nothing beyond what the platform needs. */
+const PERMISSIONS: Record<RepoAccess | "pull_request", Record<string, "read" | "write">> = {
+  read: { contents: "read" },
+  write: { contents: "write" },
+  pull_request: { pull_requests: "write" },
+};
+
+/** Refresh tokens this long before GitHub expires them (they live one hour). */
+const REFRESH_MARGIN_MS = 5 * 60_000;
+
+export interface GitHubAppOptions {
+  appId: string;
+  /** PEM private key generated for the GitHub App. */
+  privateKey: string;
+  apiUrl?: string;
+  /** Git host used for clone and push URLs. */
+  gitUrl?: string;
+  fetch?: typeof fetch;
+  now?: () => number;
+}
+
+export class GitHubError extends Error {
+  constructor(
+    method: string,
+    path: string,
+    readonly status: number,
+    body: string,
+  ) {
+    super(`GitHub ${method} ${path} failed: ${status} ${body}`);
+  }
+}
+
+const b64url = (data: string | Buffer) => Buffer.from(data).toString("base64url");
+
+/**
+ * Repository access through a GitHub App (FR-E3). Every token is an installation
+ * token scoped to one repository and the minimum permissions for the job, so a task
+ * can never touch another repo, and only the platform ever holds write access.
+ */
+export class GitHubApp implements CodeHost, RepoCredentials {
+  private readonly api: string;
+  private readonly git: string;
+  private readonly fetch: typeof fetch;
+  private readonly now: () => number;
+  private readonly installations = new Map<string, number>();
+  private readonly tokens = new Map<string, { token: string; expiresAt: number }>();
+
+  constructor(private readonly opts: GitHubAppOptions) {
+    this.api = (opts.apiUrl ?? "https://api.github.com").replace(/\/$/, "");
+    this.git = (opts.gitUrl ?? "https://github.com").replace(/\/$/, "");
+    this.fetch = opts.fetch ?? fetch;
+    this.now = opts.now ?? Date.now;
+  }
+
+  /** Short-lived JWT that authenticates as the App itself (RS256, max 10 minutes). */
+  appJwt(): string {
+    const iat = Math.floor(this.now() / 1000) - 60; // tolerate clock drift
+    const header = b64url(JSON.stringify({ alg: "RS256", typ: "JWT" }));
+    const payload = b64url(JSON.stringify({ iat, exp: iat + 9 * 60, iss: this.opts.appId }));
+    const signature = createSign("RSA-SHA256").update(`${header}.${payload}`).sign(this.opts.privateKey);
+    return `${header}.${payload}.${b64url(signature)}`;
+  }
+
+  private async request<T>(method: string, path: string, auth: string, body?: unknown): Promise<T> {
+    const res = await this.fetch(`${this.api}${path}`, {
+      method,
+      headers: {
+        accept: "application/vnd.github+json",
+        authorization: auth,
+        "x-github-api-version": "2022-11-28",
+        "user-agent": "shira",
+        ...(body ? { "content-type": "application/json" } : {}),
+      },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    });
+    if (!res.ok) throw new GitHubError(method, path, res.status, (await res.text()).slice(0, 500));
+    return (await res.json()) as T;
+  }
+
+  private async installationId(repo: string): Promise<number> {
+    const cached = this.installations.get(repo);
+    if (cached) return cached;
+    const { id } = await this.request<{ id: number }>("GET", `/repos/${repo}/installation`, `Bearer ${this.appJwt()}`);
+    this.installations.set(repo, id);
+    return id;
+  }
+
+  /** An installation token for one repo with one permission set, cached until near expiry. */
+  async token(repo: string, purpose: RepoAccess | "pull_request"): Promise<string> {
+    const key = `${repo}:${purpose}`;
+    const cached = this.tokens.get(key);
+    if (cached && cached.expiresAt - REFRESH_MARGIN_MS > this.now()) return cached.token;
+
+    const installation = await this.installationId(repo);
+    const { token, expires_at } = await this.request<{ token: string; expires_at: string }>(
+      "POST",
+      `/app/installations/${installation}/access_tokens`,
+      `Bearer ${this.appJwt()}`,
+      { repositories: [repo.split("/")[1]], permissions: { metadata: "read", ...PERMISSIONS[purpose] } },
+    );
+    this.tokens.set(key, { token, expiresAt: Date.parse(expires_at) });
+    return token;
+  }
+
+  cloneUrl(repo: string): string {
+    return `${this.git}/${repo}.git`;
+  }
+
+  /**
+   * Git config entries that authenticate HTTPS git operations against the host. Passed
+   * to git through GIT_CONFIG_* environment variables, so the token never appears in
+   * argv or .git/config where the agent could read it later.
+   */
+  async gitEnv(repo: string, access: RepoAccess): Promise<Record<string, string>> {
+    const basic = Buffer.from(`x-access-token:${await this.token(repo, access)}`).toString("base64");
+    return {
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: `http.${this.git}/.extraheader`,
+      GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${basic}`,
+    };
+  }
+
+  /**
+   * Opens the PR, or returns the open one for the same branch. A retry after a crash
+   * between opening the PR and marking the task done must not fail or duplicate it.
+   */
+  async openPullRequest(pr: { repo: string; head: string; base: string; title: string; body: string }) {
+    const token = await this.token(pr.repo, "pull_request");
+    try {
+      const created = await this.request<{ number: number; html_url: string }>("POST", `/repos/${pr.repo}/pulls`, `token ${token}`, {
+        title: pr.title,
+        head: pr.head,
+        base: pr.base,
+        body: pr.body,
+        maintainer_can_modify: true,
+      });
+      return { number: created.number, url: created.html_url };
+    } catch (err) {
+      if (!(err instanceof GitHubError && err.status === 422)) throw err;
+      const owner = pr.repo.split("/")[0];
+      const open = await this.request<{ number: number; html_url: string }[]>(
+        "GET",
+        `/repos/${pr.repo}/pulls?state=open&head=${encodeURIComponent(`${owner}:${pr.head}`)}`,
+        `token ${token}`,
+      );
+      if (!open[0]) throw err;
+      return { number: open[0].number, url: open[0].html_url };
+    }
+  }
+}

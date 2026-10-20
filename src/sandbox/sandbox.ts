@@ -9,6 +9,19 @@ export interface SandboxSpec {
   checkpointSha?: string;
 }
 
+export type RepoAccess = "read" | "write";
+
+/**
+ * Supplies git credentials for one repo at a time (FR-E3). Production: the GitHub
+ * App. Credentials go to individual platform-run git commands, never into the
+ * workspace, so the agent cannot push.
+ */
+export interface RepoCredentials {
+  cloneUrl(repo: string): string;
+  /** Environment variables that authenticate one git command. */
+  gitEnv(repo: string, access: RepoAccess): Promise<Record<string, string>>;
+}
+
 export interface ExecResult {
   code: number;
   stdout: string;
@@ -23,7 +36,11 @@ export interface ExecResult {
 export interface Sandbox {
   readonly id: string;
   readonly workspace: Workspace;
-  exec(command: string, opts?: { timeoutMs?: number }): Promise<ExecResult>;
+  /**
+   * Runs a shell command in the workspace. `auth` adds repo credentials for that one
+   * command; the dispatcher uses it to fetch and push after the agent has exited.
+   */
+  exec(command: string, opts?: { timeoutMs?: number; auth?: RepoAccess }): Promise<ExecResult>;
   /** Starts a long-running process (the harness) in the workspace. */
   launch: LaunchProcess;
   destroy(): Promise<void>;

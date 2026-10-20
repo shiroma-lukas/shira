@@ -5,14 +5,19 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ExecResult, Sandbox, SandboxProvider, SandboxSpec } from "./sandbox.js";
+import type { ExecResult, RepoCredentials, Sandbox, SandboxProvider, SandboxSpec } from "./sandbox.js";
 
 const MAX_OUTPUT = 1_000_000;
 
 /** Runs a shell command in `cwd`, capturing at most MAX_OUTPUT bytes of each stream. */
-export function sh(command: string, cwd: string, timeoutMs = 10 * 60_000): Promise<ExecResult> {
+export function sh(
+  command: string,
+  cwd: string,
+  timeoutMs = 10 * 60_000,
+  env: Record<string, string> = {},
+): Promise<ExecResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn("sh", ["-c", command], { cwd, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn("sh", ["-c", command], { cwd, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...env } });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (d: Buffer) => (stdout = (stdout + d).slice(-MAX_OUTPUT)));
@@ -50,8 +55,8 @@ export function launch(argv: string[], cwd: string): HarnessProcess {
   };
 }
 
-async function mustSh(command: string, cwd: string): Promise<void> {
-  const r = await sh(command, cwd);
+async function mustSh(command: string, cwd: string, env?: Record<string, string>): Promise<void> {
+  const r = await sh(command, cwd, undefined, env);
   if (r.code !== 0) throw new Error(`${command} failed (${r.code}): ${r.stderr.trim()}`);
 }
 
@@ -66,7 +71,9 @@ export class LocalSandboxProvider implements SandboxProvider {
   constructor(
     private readonly opts: {
       unsafeNoIsolation: true;
-      /** Where to clone from; defaults to GitHub over HTTPS. */
+      /** Repo credentials (the GitHub App). Without them, clone and push are unauthenticated. */
+      credentials?: RepoCredentials;
+      /** Overrides where to clone from (tests). */
       cloneUrl?: (repo: string) => string;
     },
   ) {
@@ -76,12 +83,21 @@ export class LocalSandboxProvider implements SandboxProvider {
   async create(spec: SandboxSpec): Promise<Sandbox> {
     const root = await mkdtemp(join(tmpdir(), "shira-sandbox-"));
     const path = join(root, "repo");
-    const url = this.opts.cloneUrl?.(spec.repo.repo) ?? `https://github.com/${spec.repo.repo}.git`;
+    const repo = spec.repo.repo;
+    const creds = this.opts.credentials;
+    const url = this.opts.cloneUrl?.(repo) ?? creds?.cloneUrl(repo) ?? `https://github.com/${repo}.git`;
+    const authEnv = async (access: "read" | "write" | undefined) => (access && creds ? creds.gitEnv(repo, access) : {});
     try {
-      await mustSh(`git clone --quiet ${q(url)} repo`, root);
-      await mustSh(`git config user.name shira-worker && git config user.email shira-worker@localhost`, path);
+      const readEnv = await authEnv("read");
+      await mustSh(`git clone --quiet ${q(url)} repo`, root, readEnv);
+      // An empty helper resets the list, so git can't fall back to the host's keychain and
+      // let the agent push with a person's credentials.
+      await mustSh(
+        `git config user.name shira-worker && git config user.email shira-worker@localhost && git config credential.helper ''`,
+        path,
+      );
       if (spec.checkpointSha) {
-        await mustSh(`git fetch --quiet origin ${q(spec.branch)}`, path);
+        await mustSh(`git fetch --quiet origin ${q(spec.branch)}`, path, readEnv);
         await mustSh(`git checkout --quiet -B ${q(spec.branch)} ${q(spec.checkpointSha)}`, path);
       } else {
         await mustSh(`git checkout --quiet -B ${q(spec.branch)} ${q(`origin/${spec.repo.defaultBranch}`)}`, path);
@@ -93,7 +109,7 @@ export class LocalSandboxProvider implements SandboxProvider {
     return {
       id: `local-${randomUUID()}`,
       workspace: { repo: spec.repo.repo, branch: spec.branch, path },
-      exec: (command, o) => sh(command, path, o?.timeoutMs),
+      exec: async (command, o) => sh(command, path, o?.timeoutMs, await authEnv(o?.auth)),
       launch: (argv) => launch(argv, path),
       destroy: () => rm(root, { recursive: true, force: true }),
     };

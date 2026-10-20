@@ -6,8 +6,9 @@ decide, and review; agents do the work and open pull requests. See the [PRD](doc
 **Status:** M1 in progress. The dispatcher runs the full loop (claim, sandbox, harness,
 checkpoint and resume, rebase and test gate, secret scan, PR) and is tested end to end against
 a scripted harness and a local, unisolated sandbox. The Claude Code adapter runs headless
-(`claude -p --bare`) with redacted transcripts. Still missing for M1: an isolated sandbox
-runtime and the GitHub App code host.
+(`claude -p --bare`) with redacted transcripts, and repositories are reached through a
+GitHub App ([setup](docs/github-app.md)). Still missing for M1: the gVisor sandbox, so
+`shira dispatch` currently requires `--unsafe-local-sandbox`.
 
 ## Layout
 
@@ -15,12 +16,14 @@ runtime and the GitHub App code host.
 |---|---|
 | `docs/prd.md` | Product requirements, v0.2 |
 | `docs/contracts.md` | How agents hand off work and how paused tasks resume |
+| `docs/github-app.md` | Creating and installing the GitHub App |
 | `src/contracts/` | Wire contracts (Zod): envelope, reply, statuses, adapter interface, agent and repo config, permissions |
 | `src/config/` | Loads and validates `config/` (`pnpm validate-config`) |
 | `src/db/` | Postgres client wrappers and migration runner |
 | `src/queue/` | Task store (queue, leases, retries, audit events), routing rules, intake, platform settings |
 | `src/ledger/` | Cost ledger and budget checks |
 | `src/dispatcher/` | Claim-to-PR loop and the standard PR description |
+| `src/github/` | GitHub App: scoped installation tokens, git credentials, PRs |
 | `src/harness/` | Claude Code adapter and transcript storage |
 | `src/sandbox/` | Sandbox interface and a local dev-only provider (no isolation) |
 | `src/security/` | Secret scanning for diffs and redaction |

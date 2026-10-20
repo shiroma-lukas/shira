@@ -277,6 +277,7 @@ export class Dispatcher {
     const branch = sandbox.workspace.branch;
     const saved = await sandbox.exec(
       `git add -A && (git diff --cached --quiet || git commit --quiet -m "shira: checkpoint") && git push --quiet -f origin HEAD:refs/heads/${q(branch)}`,
+      { auth: "write" },
     );
     if (saved.code !== 0) return (await this.retry(task, `checkpoint push failed: ${tail(saved.stderr, 500)}`)).status;
     const head = (await sandbox.exec("git rev-parse HEAD")).stdout.trim();
@@ -322,7 +323,7 @@ export class Dispatcher {
       return (await this.retry(task, "uncommitted changes left in the workspace")).status;
     }
 
-    await git(`git fetch --quiet origin ${q(base)}`);
+    await sandbox.exec(`git fetch --quiet origin ${q(base)}`, { auth: "read" });
     if ((await git(`git rev-list --count ${q(`origin/${base}`)}..HEAD`)).stdout.trim() === "0") {
       return (await this.fail(task, { reason: "no changes to propose", reply_id: reply.id })).status;
     }
@@ -351,7 +352,7 @@ export class Dispatcher {
     }
     const diffStat = (await git(`git diff --stat ${range}`)).stdout;
 
-    const push = await git(`git push --quiet -f origin HEAD:refs/heads/${q(branch)}`);
+    const push = await sandbox.exec(`git push --quiet -f origin HEAD:refs/heads/${q(branch)}`, { auth: "write" });
     if (push.code !== 0) return (await this.retry(task, `push failed: ${tail(push.stderr, 500)}`)).status;
 
     const spend = await this.ledger.taskSpend(task.id);
