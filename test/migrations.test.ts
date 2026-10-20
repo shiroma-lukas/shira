@@ -1,9 +1,10 @@
 import { PGlite } from "@electric-sql/pglite";
 import { beforeAll, describe, expect, it } from "vitest";
+import { fromPGlite } from "../src/db/client.js";
 import { migrate } from "../src/db/migrate.js";
 
 describe("migrations", () => {
-  const db = new PGlite();
+  const db = fromPGlite(new PGlite());
   let taskId: string;
 
   beforeAll(async () => {

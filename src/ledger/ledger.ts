@@ -1,0 +1,79 @@
+import type { Budget, Role } from "../contracts/index.js";
+import type { RunOutcome } from "../contracts/adapter.js";
+import type { SqlClient } from "../db/migrate.js";
+
+export interface Spend {
+  usd: number;
+  /** All billed tokens: input, output, cache reads, and cache writes. */
+  tokens: number;
+  minutes: number;
+}
+
+export type BudgetDimension = "usd" | "tokens" | "minutes";
+
+/** Returns the first budget dimension that spend has reached, or null if within budget (FR-K2). */
+export function exceededBudget(budget: Budget, spend: Spend): BudgetDimension | null {
+  if (spend.usd >= budget.usd) return "usd";
+  if (spend.tokens >= budget.tokens) return "tokens";
+  if (spend.minutes >= budget.minutes) return "minutes";
+  return null;
+}
+
+/** The cost ledger: one row per harness run (FR-K1). */
+export class Ledger {
+  constructor(private readonly db: SqlClient) {}
+
+  async startRun(r: { taskId: string; role: Role; harness: string; model: string }): Promise<{ id: string; attempt: number }> {
+    const { rows } = await this.db.query<{ id: string; attempt: number }>(
+      `INSERT INTO runs (task_id, attempt, role, harness, model)
+       VALUES ($1, (SELECT coalesce(max(attempt), 0) + 1 FROM runs WHERE task_id = $1), $2, $3, $4)
+       RETURNING id, attempt`,
+      [r.taskId, r.role, r.harness, r.model],
+    );
+    return rows[0]!;
+  }
+
+  async finishRun(runId: string, outcome: RunOutcome): Promise<void> {
+    const u = outcome.usage;
+    await this.db.query(
+      `UPDATE runs SET
+         model = $2, input_tokens = $3, output_tokens = $4, cache_read_tokens = $5, cache_write_tokens = $6,
+         usd = $7, duration_ms = $8, outcome = $9, transcript_uri = $10, ended_at = now()
+       WHERE id = $1 AND ended_at IS NULL`,
+      [
+        runId,
+        u.model,
+        u.inputTokens,
+        u.outputTokens,
+        u.cacheReadTokens,
+        u.cacheWriteTokens,
+        u.usd,
+        u.durationMs,
+        outcome.kind === "reply" ? outcome.reply.status : outcome.reason,
+        outcome.transcriptUri,
+      ],
+    );
+  }
+
+  /** Total spend across every run of a task, including runs before a pause. */
+  async taskSpend(taskId: string): Promise<Spend> {
+    const { rows } = await this.db.query<{ usd: string; tokens: string; ms: string }>(
+      `SELECT coalesce(sum(usd), 0) AS usd,
+              coalesce(sum(input_tokens + output_tokens + cache_read_tokens + cache_write_tokens), 0) AS tokens,
+              coalesce(sum(duration_ms), 0) AS ms
+       FROM runs WHERE task_id = $1`,
+      [taskId],
+    );
+    const r = rows[0]!;
+    return { usd: Number(r.usd), tokens: Number(r.tokens), minutes: Number(r.ms) / 60_000 };
+  }
+
+  /** Spend since the start of the current calendar month (UTC). */
+  async monthSpendUsd(): Promise<number> {
+    const { rows } = await this.db.query<{ usd: string }>(
+      `SELECT coalesce(sum(usd), 0) AS usd FROM runs
+       WHERE started_at >= date_trunc('month', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'`,
+    );
+    return Number(rows[0]!.usd);
+  }
+}

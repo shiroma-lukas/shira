@@ -1,0 +1,19 @@
+# Local development database. Tests don't need it (they use PGlite).
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: atp
+      POSTGRES_PASSWORD: atp
+      POSTGRES_DB: atp
+    ports:
+      - "54329:5432"
+    volumes:
+      - atp-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U atp -d atp -h localhost"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+volumes:
+  atp-pg:

@@ -1,0 +1,131 @@
+// atp: command-line intake and admin for the platform (FR-Q1, FR-Q4, FR-S4).
+import { userInfo } from "node:os";
+import { parseArgs } from "node:util";
+import pg from "pg";
+import { loadConfig } from "../config/load.js";
+import { TaskStatus } from "../contracts/index.js";
+import { fromPool, type Db } from "../db/client.js";
+import { migrate } from "../db/migrate.js";
+import { Ledger } from "../ledger/ledger.js";
+import { submit } from "../queue/intake.js";
+import { Settings } from "../queue/settings.js";
+import { TaskStore, type Task } from "../queue/store.js";
+
+const USAGE = `usage: atp <command> [options]
+
+  migrate                                   apply database migrations
+  submit --repo <org/name> --goal <text>    queue a task
+         [--path <glob>]... [--priority <n>]
+  list [--status <status>] [--limit <n>]    list recent tasks
+  show <task-id>                            task details, spend, and event log
+  cancel <task-id> [--reason <text>]        cancel an unfinished task
+  kill on|off|status                        pause or resume all agents
+  budget monthly <usd>|none                 set the monthly org spend ceiling
+
+env: DATABASE_URL (default postgres://atp:atp@localhost:54329/atp), ATP_CONFIG (default ./config)`;
+
+const actor = `cli:${userInfo().username}`;
+
+function fail(message: string): never {
+  console.error(message);
+  process.exit(1);
+}
+
+function line(t: Task): string {
+  return [t.id, t.status.padEnd(14), t.role.padEnd(8), t.repo, JSON.stringify(t.goal)].join("  ");
+}
+
+async function main(db: Db, argv: string[]): Promise<void> {
+  const [command, ...rest] = argv;
+  const store = new TaskStore(db);
+
+  switch (command) {
+    case "migrate": {
+      const applied = await migrate(db);
+      console.log(applied.length ? `applied: ${applied.join(", ")}` : "up to date");
+      return;
+    }
+    case "submit": {
+      const { values } = parseArgs({
+        args: rest,
+        options: {
+          repo: { type: "string" },
+          goal: { type: "string" },
+          path: { type: "string", multiple: true },
+          priority: { type: "string" },
+        },
+      });
+      if (!values.repo || !values.goal) fail("submit needs --repo and --goal");
+      const config = await loadConfig(process.env.ATP_CONFIG ?? "config");
+      if (!config.ok) fail(config.errors.map((e) => `${e.file}: ${e.message}`).join("\n"));
+      const task = await submit(db, config.config, {
+        source: "cli",
+        requester: actor,
+        repo: values.repo,
+        goal: values.goal,
+        paths: values.path,
+        priority: values.priority ? Number(values.priority) : 0,
+      });
+      console.log(line(task));
+      return;
+    }
+    case "list": {
+      const { values } = parseArgs({ args: rest, options: { status: { type: "string" }, limit: { type: "string" } } });
+      const status = values.status === undefined ? undefined : TaskStatus.parse(values.status);
+      const tasks = await store.list({ status, limit: values.limit ? Number(values.limit) : 50 });
+      for (const t of tasks) console.log(line(t));
+      return;
+    }
+    case "show": {
+      const id = rest[0] ?? fail("show needs a task id");
+      const task = (await store.get(id)) ?? fail(`task ${id} not found`);
+      const spend = await new Ledger(db).taskSpend(id);
+      console.log(line(task));
+      console.log(`  priority ${task.priority}, attempts ${task.attempts}, retries ${task.retriesUsed}/${task.budget.retries}`);
+      console.log(
+        `  spend $${spend.usd.toFixed(2)}/$${task.budget.usd}, ${spend.tokens}/${task.budget.tokens} tokens, ` +
+          `${spend.minutes.toFixed(1)}/${task.budget.minutes} min`,
+      );
+      console.log(`  scope ${task.scope.paths.join(", ")}`);
+      for (const e of await store.events(id)) {
+        const change = e.kind === "state_change" ? `${e.fromStatus ?? "-"} -> ${e.toStatus}` : e.kind;
+        const payload = Object.keys(e.payload).length ? ` ${JSON.stringify(e.payload)}` : "";
+        console.log(`  ${e.at.toISOString()}  ${e.actor.padEnd(14)} ${change}${payload}`);
+      }
+      return;
+    }
+    case "cancel": {
+      const { values, positionals } = parseArgs({ args: rest, allowPositionals: true, options: { reason: { type: "string" } } });
+      const id = positionals[0] ?? fail("cancel needs a task id");
+      console.log(line(await store.cancel(id, actor, values.reason)));
+      return;
+    }
+    case "kill": {
+      const settings = new Settings(db);
+      const mode = rest[0];
+      if (mode === "on" || mode === "off") await settings.setAgentsPaused(mode === "on", actor);
+      else if (mode !== "status") fail("kill needs on, off, or status");
+      console.log((await settings.agentsPaused()) ? "agents paused: no new tasks will be claimed" : "agents running");
+      return;
+    }
+    case "budget": {
+      const [scope, value] = rest;
+      if (scope !== "monthly" || value === undefined) fail("budget needs: monthly <usd>|none");
+      await new Settings(db).setMonthlyBudgetUsd(value === "none" ? null : Number(value), actor);
+      console.log(`monthly budget: ${value === "none" ? "not set" : `$${value}`}`);
+      return;
+    }
+    default:
+      fail(USAGE);
+  }
+}
+
+const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL ?? "postgres://atp:atp@localhost:54329/atp" });
+try {
+  await main(fromPool(pool), process.argv.slice(2));
+} catch (err) {
+  console.error((err as Error).message);
+  process.exitCode = 1;
+} finally {
+  await pool.end();
+}

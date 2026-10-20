@@ -7,6 +7,19 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: atp
+          POSTGRES_PASSWORD: atp
+          POSTGRES_DB: atp_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U atp -d atp_test"
+          --health-interval 2s --health-timeout 3s --health-retries 30
+    env:
+      ATP_TEST_DATABASE_URL: postgres://atp:atp@localhost:5432/atp_test
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
