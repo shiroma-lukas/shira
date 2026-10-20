@@ -50,6 +50,51 @@ interface Grant {
   hosts: readonly string[];
 }
 
+/** The parts of a CONNECT request the proxy acts on. */
+interface ConnectRequest {
+  target: string;
+  authorization: string | undefined;
+}
+
+/** A follow-up request after a 407 may not exceed this, or arrive later than the timeout. */
+const MAX_REQUEST_HEAD = 16 * 1024;
+const FOLLOW_UP_TIMEOUT_MS = 10_000;
+/** Challenges per connection before giving up, so a client can't hold a socket open forever. */
+const MAX_CHALLENGES = 2;
+
+/**
+ * Reads one HTTP request head from a socket Node's HTTP parser has already let go of
+ * (after a CONNECT). Returns null on timeout, oversize, close, or anything but CONNECT.
+ */
+function readConnect(socket: Socket): Promise<(ConnectRequest & { rest: Buffer }) | null> {
+  return new Promise((resolve) => {
+    let buf = Buffer.alloc(0);
+    const finish = (value: (ConnectRequest & { rest: Buffer }) | null) => {
+      clearTimeout(timer);
+      socket.off("data", onData);
+      socket.off("close", onClose);
+      resolve(value);
+    };
+    const onClose = () => finish(null);
+    const onData = (chunk: Buffer) => {
+      buf = Buffer.concat([buf, chunk]);
+      const end = buf.indexOf("\r\n\r\n");
+      if (end === -1) {
+        if (buf.length > MAX_REQUEST_HEAD) finish(null);
+        return;
+      }
+      const [requestLine = "", ...headerLines] = buf.subarray(0, end).toString("latin1").split("\r\n");
+      const [method, target] = requestLine.split(" ");
+      if (method !== "CONNECT" || !target) return finish(null);
+      const auth = headerLines.find((l) => /^proxy-authorization:/i.test(l));
+      finish({ target, authorization: auth?.slice(auth.indexOf(":") + 1).trim(), rest: buf.subarray(end + 4) });
+    };
+    const timer = setTimeout(() => finish(null), FOLLOW_UP_TIMEOUT_MS);
+    socket.on("data", onData);
+    socket.on("close", onClose);
+  });
+}
+
 export interface EgressProxyOptions {
   /** Allow private and loopback targets. Tests only. */
   allowPrivateTargets?: boolean;
@@ -66,6 +111,8 @@ export class EgressProxy implements EgressGrants {
   private readonly grants = new Map<string, Grant>();
   /** Open tunnels per sandbox, so revoking a sandbox also cuts connections it already has. */
   private readonly tunnels = new Map<string, Set<Socket>>();
+  /** Connections waiting for the client's retry after a 407. */
+  private readonly challenged = new Set<Socket>();
   private readonly log: NonNullable<EgressProxyOptions["log"]>;
   readonly server: Server;
 
@@ -76,7 +123,8 @@ export class EgressProxy implements EgressGrants {
       this.log("egress_denied", { reason: "plain_http", url: req.url });
     });
     this.server.on("connect", (req: IncomingMessage, client: Socket, head: Buffer) => {
-      this.tunnel(req, client, head).catch((err) => {
+      const request = { target: req.url ?? "", authorization: req.headers["proxy-authorization"] };
+      this.tunnel(request, client, head, 0).catch((err) => {
         this.log("egress_error", { error: (err as Error).message });
         client.destroy();
       });
@@ -99,6 +147,8 @@ export class EgressProxy implements EgressGrants {
 
   close(): Promise<void> {
     for (const set of this.tunnels.values()) for (const s of set) s.destroy();
+    for (const s of this.challenged) s.destroy();
+    this.challenged.clear();
     this.tunnels.clear();
     return new Promise((resolve) => {
       this.server.closeAllConnections();
@@ -106,8 +156,7 @@ export class EgressProxy implements EgressGrants {
     });
   }
 
-  private authenticate(req: IncomingMessage): { id: string; grant: Grant } | null {
-    const header = req.headers["proxy-authorization"];
+  private authenticate(header: string | undefined): { id: string; grant: Grant } | null {
     if (!header?.startsWith("Basic ")) return null;
     const decoded = Buffer.from(header.slice(6), "base64").toString();
     const sep = decoded.indexOf(":");
@@ -118,16 +167,30 @@ export class EgressProxy implements EgressGrants {
     return { id, grant };
   }
 
-  private async tunnel(req: IncomingMessage, client: Socket, head: Buffer): Promise<void> {
+  private async tunnel(req: ConnectRequest, client: Socket, head: Buffer, challenges: number): Promise<void> {
     const deny = (status: string, reason: string, fields: Record<string, unknown> = {}) => {
-      this.log("egress_denied", { reason, target: req.url, ...fields });
+      this.log("egress_denied", { reason, target: req.target, ...fields });
       client.end(`HTTP/1.1 ${status}\r\nProxy-Authenticate: Basic realm="shira"\r\n\r\n`);
     };
 
-    const auth = this.authenticate(req);
-    if (!auth) return deny("407 Proxy Authentication Required", "unauthenticated");
+    const auth = this.authenticate(req.authorization);
+    if (!auth) {
+      // Many clients (git with default settings, curl with --proxy-anyauth) send credentials
+      // only after a 407, retrying on the same connection. Keep it open for that retry.
+      if (challenges >= MAX_CHALLENGES) return deny("407 Proxy Authentication Required", "unauthenticated");
+      this.log("egress_challenge", { target: req.target });
+      client.write(`HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm="shira"\r\nContent-Length: 0\r\n\r\n`);
+      this.challenged.add(client);
+      const next = await readConnect(client).finally(() => this.challenged.delete(client));
+      if (!next) {
+        this.log("egress_denied", { reason: "unauthenticated", target: req.target });
+        client.destroy();
+        return;
+      }
+      return this.tunnel(next, client, next.rest, challenges + 1);
+    }
 
-    const m = /^\[?([^\]]+?)\]?:(\d+)$/.exec(req.url ?? "");
+    const m = /^\[?([^\]]+?)\]?:(\d+)$/.exec(req.target);
     if (!m) return deny("400 Bad Request", "bad_target", { sandbox: auth.id });
     const [, host, portText] = m as unknown as [string, string, string];
     const port = Number(portText);
