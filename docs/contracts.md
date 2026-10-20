@@ -92,9 +92,9 @@ human thinks.
   "run_id": "5d6e7f8a-…",
   "harness": "claude-code",
   "repo": "example-org/example-repo",
-  "branch": "atp/7c1e2a4b",
+  "branch": "shira/7c1e2a4b",
   "head_sha": "4f2a9c1e8b7d6a5c4b3a2f1e0d9c8b7a6f5e4d3c",
-  "transcript_uri": "s3://atp-transcripts/7c1e2a4b/5d6e7f8a.jsonl",
+  "transcript_uri": "s3://shira-transcripts/7c1e2a4b/5d6e7f8a.jsonl",
   "session_ref": "cc-session-01JB6Z8K",
   "created_at": "2026-10-19T14:02:11Z"
 }
@@ -136,7 +136,7 @@ counts spending across both runs.
   "status": "done",
   "in_reply_to": "0b8f1c2d-…",
   "summary": "Names normalized to NFC before row filter (per D-0007).\nRegression test added; full suite green.",
-  "artifact": { "kind": "commit", "repo": "example-org/example-repo", "branch": "atp/7c1e2a4b", "sha": "9b8a7c6d…" }
+  "artifact": { "kind": "commit", "repo": "example-org/example-repo", "branch": "shira/7c1e2a4b", "sha": "9b8a7c6d…" }
 }
 ```
 

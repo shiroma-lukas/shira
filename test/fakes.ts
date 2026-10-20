@@ -86,7 +86,7 @@ export class FakeCodeHost implements CodeHost {
 
 /** A bare origin repo whose test command passes only once app.txt says "fixed". */
 export async function makeOrigin(): Promise<string> {
-  const root = await mkdtemp(join(tmpdir(), "atp-origin-"));
+  const root = await mkdtemp(join(tmpdir(), "shira-origin-"));
   const run = async (cmd: string, cwd = root) => {
     const r = await sh(cmd, cwd);
     if (r.code !== 0) throw new Error(`${cmd}: ${r.stderr}`);

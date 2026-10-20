@@ -39,13 +39,13 @@ describe("migrations", () => {
     const sha = "a".repeat(40);
     await db.query(
       `INSERT INTO checkpoints (task_id, run_id, harness, branch, head_sha, transcript_uri)
-       VALUES ($1, $2, 'claude-code', 'atp/x', $3, 's3://t')`,
+       VALUES ($1, $2, 'claude-code', 'shira/x', $3, 's3://t')`,
       [taskId, rows[0]!.id, sha],
     );
     await expect(
       db.query(
         `INSERT INTO checkpoints (task_id, run_id, harness, branch, head_sha, transcript_uri)
-         VALUES ($1, $2, 'claude-code', 'atp/x', 'not-a-sha', 's3://t')`,
+         VALUES ($1, $2, 'claude-code', 'shira/x', 'not-a-sha', 's3://t')`,
         [taskId, rows[0]!.id],
       ),
     ).rejects.toThrow();

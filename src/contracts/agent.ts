@@ -2,7 +2,7 @@ import { z } from "zod";
 import { Budget, Role } from "./common.js";
 import { lintPermissions, Permission } from "./permissions.js";
 
-export const API_VERSION = "atp/v1" as const;
+export const API_VERSION = "shira/v1" as const;
 
 const ModelChoice = z.object({
   harness: z.string().min(1),

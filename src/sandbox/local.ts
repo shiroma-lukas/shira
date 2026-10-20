@@ -51,12 +51,12 @@ export class LocalSandboxProvider implements SandboxProvider {
   }
 
   async create(spec: SandboxSpec): Promise<Sandbox> {
-    const root = await mkdtemp(join(tmpdir(), "atp-sandbox-"));
+    const root = await mkdtemp(join(tmpdir(), "shira-sandbox-"));
     const path = join(root, "repo");
     const url = this.opts.cloneUrl?.(spec.repo.repo) ?? `https://github.com/${spec.repo.repo}.git`;
     try {
       await mustSh(`git clone --quiet ${q(url)} repo`, root);
-      await mustSh(`git config user.name atp-worker && git config user.email atp-worker@localhost`, path);
+      await mustSh(`git config user.name shira-worker && git config user.email shira-worker@localhost`, path);
       if (spec.checkpointSha) {
         await mustSh(`git fetch --quiet origin ${q(spec.branch)}`, path);
         await mustSh(`git checkout --quiet -B ${q(spec.branch)} ${q(spec.checkpointSha)}`, path);

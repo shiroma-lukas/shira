@@ -1,4 +1,4 @@
-# Agent Team Platform
+# Shira
 
 Control plane for delegating software work to a managed team of AI agents. Humans discuss,
 decide, and review; agents do the work and open pull requests. See the [PRD](docs/prd.md).
@@ -22,7 +22,7 @@ adapter, an isolated sandbox runtime, the GitHub App code host, and transcript s
 | `src/dispatcher/` | Claim-to-PR loop and the standard PR description |
 | `src/sandbox/` | Sandbox interface and a local dev-only provider (no isolation) |
 | `src/security/` | Secret scanning for diffs and redaction |
-| `src/cli/` | The `atp` CLI |
+| `src/cli/` | The `shira` CLI |
 | `migrations/` | Postgres schema |
 | `config/` | Agent definitions and per-repo onboarding configs |
 | `context-template/` | Seed for the separate context repo |
@@ -43,17 +43,17 @@ Running the CLI against a local database (port 54329, to avoid clashing with a l
 
 ```sh
 docker compose up -d --wait
-pnpm atp migrate
-pnpm atp submit --repo example-org/example-repo --goal "Fix CSV export dropping non-ASCII names"
-pnpm atp list
-pnpm atp show <task-id>
-pnpm atp kill on          # pause all agents; `kill off` resumes
+pnpm shira migrate
+pnpm shira submit --repo example-org/example-repo --goal "Fix CSV export dropping non-ASCII names"
+pnpm shira list
+pnpm shira show <task-id>
+pnpm shira kill on          # pause all agents; `kill off` resumes
 ```
 
 The concurrent-claim test needs a real Postgres and drops the schema of the database it is
 given, so use a throwaway database:
 
 ```sh
-docker compose exec postgres psql -U atp -c "CREATE DATABASE atp_test"
-ATP_TEST_DATABASE_URL=postgres://atp:atp@localhost:54329/atp_test pnpm test
+docker compose exec postgres psql -U shira -c "CREATE DATABASE shira_test"
+SHIRA_TEST_DATABASE_URL=postgres://shira:shira@localhost:54329/shira_test pnpm test
 ```

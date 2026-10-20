@@ -137,7 +137,7 @@ export class Dispatcher {
     const envelope = await this.envelopeFor(task, repo);
     const checkpoint = await this.checkpoints.latest(task.id, task.repo);
     const answer = await this.pendingAnswer(task.id);
-    const branch = checkpoint?.branch ?? `atp/${task.id.slice(0, 8)}`;
+    const branch = checkpoint?.branch ?? `shira/${task.id.slice(0, 8)}`;
 
     let sandbox: Sandbox;
     try {
@@ -272,7 +272,7 @@ export class Dispatcher {
   ): Promise<TaskStatus> {
     const branch = sandbox.workspace.branch;
     const saved = await sandbox.exec(
-      `git add -A && (git diff --cached --quiet || git commit --quiet -m "atp: checkpoint") && git push --quiet -f origin HEAD:refs/heads/${q(branch)}`,
+      `git add -A && (git diff --cached --quiet || git commit --quiet -m "shira: checkpoint") && git push --quiet -f origin HEAD:refs/heads/${q(branch)}`,
     );
     if (saved.code !== 0) return (await this.retry(task, `checkpoint push failed: ${tail(saved.stderr, 500)}`)).status;
     const head = (await sandbox.exec("git rev-parse HEAD")).stdout.trim();

@@ -1,4 +1,4 @@
-// atp: command-line intake and admin for the platform (FR-Q1, FR-Q4, FR-S4).
+// shira: command-line intake and admin for the platform (FR-Q1, FR-Q4, FR-S4).
 import { userInfo } from "node:os";
 import { parseArgs } from "node:util";
 import pg from "pg";
@@ -11,7 +11,7 @@ import { submit } from "../queue/intake.js";
 import { Settings } from "../queue/settings.js";
 import { TaskStore, type Task } from "../queue/store.js";
 
-const USAGE = `usage: atp <command> [options]
+const USAGE = `usage: shira <command> [options]
 
   migrate                                   apply database migrations
   submit --repo <org/name> --goal <text>    queue a task
@@ -25,7 +25,7 @@ const USAGE = `usage: atp <command> [options]
   kill on|off|status                        pause or resume all agents
   budget monthly <usd>|none                 set the monthly org spend ceiling
 
-env: DATABASE_URL (default postgres://atp:atp@localhost:54329/atp), ATP_CONFIG (default ./config)`;
+env: DATABASE_URL (default postgres://shira:shira@localhost:54329/shira), SHIRA_CONFIG (default ./config)`;
 
 const actor = `cli:${userInfo().username}`;
 
@@ -59,7 +59,7 @@ async function main(db: Db, argv: string[]): Promise<void> {
         },
       });
       if (!values.repo || !values.goal) fail("submit needs --repo and --goal");
-      const config = await loadConfig(process.env.ATP_CONFIG ?? "config");
+      const config = await loadConfig(process.env.SHIRA_CONFIG ?? "config");
       if (!config.ok) fail(config.errors.map((e) => `${e.file}: ${e.message}`).join("\n"));
       const task = await submit(db, config.config, {
         source: "cli",
@@ -159,7 +159,7 @@ async function main(db: Db, argv: string[]): Promise<void> {
   }
 }
 
-const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL ?? "postgres://atp:atp@localhost:54329/atp" });
+const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL ?? "postgres://shira:shira@localhost:54329/shira" });
 try {
   await main(fromPool(pool), process.argv.slice(2));
 } catch (err) {

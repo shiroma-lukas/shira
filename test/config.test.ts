@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config/load.js";
 import { lintPermissions } from "../src/contracts/index.js";
 
-const worker = (extra = "") => `apiVersion: atp/v1
+const worker = (extra = "") => `apiVersion: shira/v1
 kind: Agent
 role: worker
 description: test worker
@@ -16,7 +16,7 @@ instructions: roles/worker.md
 ${extra}`;
 
 async function configDir(agents: Record<string, string>): Promise<string> {
-  const root = await mkdtemp(join(tmpdir(), "atp-config-"));
+  const root = await mkdtemp(join(tmpdir(), "shira-config-"));
   await mkdir(join(root, "agents"));
   for (const [name, body] of Object.entries(agents)) await writeFile(join(root, "agents", name), body);
   return root;

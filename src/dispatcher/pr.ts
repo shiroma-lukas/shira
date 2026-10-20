@@ -60,6 +60,6 @@ export function prDescription(i: PrDescriptionInput): string {
       `${i.spend.minutes.toFixed(1)} min across ${i.runs} run(s).`,
     "",
     "---",
-    `Task \`${t.id}\` requested by ${t.requester}. Opened by Agent Team Platform; merging is a human decision.`,
+    `Task \`${t.id}\` requested by ${t.requester}. Opened by Shira; merging is a human decision.`,
   ].join("\n");
 }

@@ -18,7 +18,7 @@ function config(): LoadedConfig {
   return {
     agents: [
       AgentDefinition.parse({
-        apiVersion: "atp/v1",
+        apiVersion: "shira/v1",
         kind: "Agent",
         role: "worker",
         description: "test",
@@ -29,7 +29,7 @@ function config(): LoadedConfig {
       }),
     ],
     repos: [
-      RepoConfig.parse({ apiVersion: "atp/v1", kind: "Repo", repo: "o/r", image: "none", test: "grep -q fixed app.txt" }),
+      RepoConfig.parse({ apiVersion: "shira/v1", kind: "Repo", repo: "o/r", image: "none", test: "grep -q fixed app.txt" }),
     ],
   };
 }
@@ -71,11 +71,11 @@ describe("Dispatcher", () => {
 
     expect(result).toEqual({ kind: "ran", taskId: task.id, status: "done" });
     expect(host.prs).toHaveLength(1);
-    expect(host.prs[0]).toMatchObject({ repo: "o/r", head: `atp/${task.id.slice(0, 8)}`, base: "main", title: "fix the bug" });
+    expect(host.prs[0]).toMatchObject({ repo: "o/r", head: `shira/${task.id.slice(0, 8)}`, base: "main", title: "fix the bug" });
     expect(host.prs[0]!.body).toContain("Fixed app.txt.");
     expect(host.prs[0]!.body).toContain("`grep -q fixed app.txt` passed");
     expect(host.prs[0]!.body).toMatch(/\$0\.10 of \$5 budget/);
-    expect(await originBranches(origin)).toContain(`atp/${task.id.slice(0, 8)}`);
+    expect(await originBranches(origin)).toContain(`shira/${task.id.slice(0, 8)}`);
     expect((await new Ledger(db).taskSpend(task.id)).usd).toBeCloseTo(0.1);
     const done = (await store.events(task.id)).at(-1);
     expect(done?.payload).toMatchObject({ pr: { number: 1 } });
@@ -100,7 +100,7 @@ describe("Dispatcher", () => {
 
     expect(await d.tick()).toMatchObject({ status: "needs_decision" });
     const checkpoint = await new CheckpointStore(db).latest(task.id, "o/r");
-    expect(checkpoint?.branch).toBe(`atp/${task.id.slice(0, 8)}`);
+    expect(checkpoint?.branch).toBe(`shira/${task.id.slice(0, 8)}`);
     expect(await d.tick()).toEqual({ kind: "idle" }); // nothing runs while waiting on a human
 
     const question = (await store.events(task.id)).find((e) => e.toStatus === "needs_decision")!;

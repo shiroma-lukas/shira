@@ -1,5 +1,5 @@
 # yaml-language-server: $schema=../../schemas/agent.json
-apiVersion: atp/v1
+apiVersion: shira/v1
 kind: Agent
 role: worker
 description: Fixes one task in one repo and opens a PR. Terse output only.

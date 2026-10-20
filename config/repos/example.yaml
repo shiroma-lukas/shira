@@ -1,6 +1,6 @@
 # yaml-language-server: $schema=../../schemas/repo.json
 # Placeholder: replace with the first real repo (PRD open question 4).
-apiVersion: atp/v1
+apiVersion: shira/v1
 kind: Repo
 repo: example-org/example-repo
 defaultBranch: main

@@ -3,17 +3,17 @@ services:
   postgres:
     image: postgres:17
     environment:
-      POSTGRES_USER: atp
-      POSTGRES_PASSWORD: atp
-      POSTGRES_DB: atp
+      POSTGRES_USER: shira
+      POSTGRES_PASSWORD: shira
+      POSTGRES_DB: shira
     ports:
       - "54329:5432"
     volumes:
-      - atp-pg:/var/lib/postgresql/data
+      - shira-pg:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U atp -d atp -h localhost"]
+      test: ["CMD-SHELL", "pg_isready -U shira -d shira -h localhost"]
       interval: 1s
       timeout: 3s
       retries: 30
 volumes:
-  atp-pg:
+  shira-pg:

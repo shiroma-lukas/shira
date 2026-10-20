@@ -1,9 +1,10 @@
-# PRD: Agent Team Platform
+# PRD: Shira
 
-Draft v0.2 | October 19, 2026 | Status: for review | Working name, to be replaced
+Draft v0.2 | October 19, 2026 | Status: for review
 
 ## Changes from v0.1
 
+- **Named Shira.** The working name "Agent Team Platform" is replaced.
 - **Milestone tags replace P0/P1/P2.** Each requirement is tagged with the milestone it ships in (M0–M4, or Later). "Required for v1" now means M0–M2. This removes v0.1's contradictions (the planner, architect, router classifier, merge queue and reviewer agent were P0 or P1 while shipping in M3 or M4).
 - **Interim behavior before M3/M4 roles exist.** Technical questions go to the human tech lead until the architect ships. Routing is rule-based until the classifier ships.
 - **Path locks are advisory.** The merge queue and rebase-and-test gate are what protect main. Scope violations now have a defined response.
@@ -15,7 +16,7 @@ Draft v0.2 | October 19, 2026 | Status: for review | Working name, to be replace
 
 ## 1. Summary
 
-Agent Team Platform lets a solo developer or a team delegate software work to a managed team of AI agents. People message the system in the channels they already use (chat, issue tracker, CLI). The platform turns those conversations into approved decisions, plans the work, runs coding agents in isolated sandboxes on VMs, and returns pull requests for human review. Humans discuss, decide, and review. Agents do the work.
+Shira lets a solo developer or a team delegate software work to a managed team of AI agents. People message the system in the channels they already use (chat, issue tracker, CLI). The platform turns those conversations into approved decisions, plans the work, runs coding agents in isolated sandboxes on VMs, and returns pull requests for human review. Humans discuss, decide, and review. Agents do the work.
 
 Three ideas shape the product:
 

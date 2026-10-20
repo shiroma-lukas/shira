@@ -1,5 +1,5 @@
 {
-  "name": "agent-team-platform",
+  "name": "shira",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -12,7 +12,7 @@
     "test": "vitest run",
     "validate-config": "tsx src/config/validate.ts config",
     "schemas": "tsx scripts/export-schemas.ts",
-    "atp": "tsx src/cli/atp.ts"
+    "shira": "tsx src/cli/shira.ts"
   },
   "dependencies": {
     "pg": "^8.23.1",
