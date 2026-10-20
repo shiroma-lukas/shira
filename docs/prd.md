@@ -5,6 +5,7 @@ Draft v0.2 | October 19, 2026 | Status: for review
 ## Changes from v0.1
 
 - **Named Shira.** The working name "Agent Team Platform" is replaced.
+- **Open core.** Shira is Apache-2.0; Shira Cloud (AWS, gVisor sandboxes, BYOC) is the commercial offering (section 15a).
 - **Milestone tags replace P0/P1/P2.** Each requirement is tagged with the milestone it ships in (M0–M4, or Later). "Required for v1" now means M0–M2. This removes v0.1's contradictions (the planner, architect, router classifier, merge queue and reviewer agent were P0 or P1 while shipping in M3 or M4).
 - **Interim behavior before M3/M4 roles exist.** Technical questions go to the human tech lead until the architect ships. Routing is rule-based until the classifier ships.
 - **Path locks are advisory.** The merge queue and rebase-and-test gate are what protect main. Scope violations now have a defined response.
@@ -53,7 +54,7 @@ Teams experimenting with coding agents run into the same issues:
 - Replacing human code review.
 - Autonomous merging or deployment.
 - A general-purpose chat assistant, web IDE, or project-management tool.
-- Multi-tenant SaaS. v1 serves a single organization.
+- A multi-tenant core. The open-source core serves a single organization; Shira Cloud runs one isolated deployment per customer (section 15a).
 
 ## 4. Users and Personas
 
@@ -240,7 +241,7 @@ Context repo (decisions, specs, conventions, approval matrix, repo configs)
     <--> Librarian (M4), all agents (read)
 ```
 
-Initial technology direction: a single-language control plane (TypeScript preferred, Python acceptable), Postgres as queue, state, and audit log, sandboxed containers on VMs, a GitHub App for repository access, and a chat app for intake.
+Technology decisions: a TypeScript control plane, Postgres as queue, state, and audit log, gVisor-sandboxed containers on VMs, a GitHub App for repository access, and a chat app for intake. Claude Code is the first harness. Shira Cloud runs on AWS.
 
 No workflow engine until needed. At 10 to 20 concurrent tasks, a Postgres queue using `SELECT ... FOR UPDATE SKIP LOCKED` with lease timeouts covers dispatch, retries, and recovery. Long waits on humans don't hold workers, because paused tasks are checkpointed rows, not live processes (FR-E6). Revisit if waits, fan-out, or recovery logic outgrow this.
 
@@ -299,6 +300,23 @@ All targets are proposals to calibrate after the M1 baseline. Cost per merged PR
 | Young dependencies change under us | Keep stable contracts, adapters at the boundaries |
 | Routing errors cause costly rework | Simple rules until M4, log every decision and outcome, confidence thresholds and human escalation for the classifier |
 
+## 15a. Distribution: Open Source and Shira Cloud
+
+| | Shira (open source) | Shira Cloud (commercial) |
+|---|---|---|
+| Repo | `shira` | `shira-cloud` (private) |
+| License | Apache-2.0; "Shira" is a trademark | Proprietary |
+| Contents | Control plane, contracts, agents, CLI, adapters, a single-machine self-host path | Terraform for AWS, managed sandbox fleet, tenant provisioning, billing, admin console |
+| Runs | Wherever the user deploys it | Hosted by us, or in the customer's AWS account (BYOC) using the same Terraform modules |
+
+Rules for the split:
+
+- **Cloud sells operations, not features.** The sandbox fleet, upgrades, backups, SSO, billing, and BYOC management are paid. Safety features (budgets, kill switch, secret scanning, audit log) are always in the open-source core.
+- **The core stays usable alone.** Self-hosting on one machine with Docker Compose and a gVisor container sandbox must work without anything from `shira-cloud`.
+- **Cloud plugs in through the core's interfaces** (`SandboxProvider`, `RepoCredentials`, `CodeHost`, `TranscriptStore`, `HarnessAdapter`), never by forking it.
+- **One deployment per customer.** The core stays single-organization; isolation between customers is a deployment boundary, not application logic.
+- **Contributions need a DCO sign-off**, which keeps future relicensing possible.
+
 ## 15. Assumptions and Open Questions
 
 ### Assumptions
@@ -312,9 +330,9 @@ All targets are proposals to calibrate after the M1 baseline. Cost per merged PR
 
 | # | Question | Blocks |
 |---|---|---|
-| 1 | Control-plane language: TypeScript or Python? | M0 |
-| 2 | Which harness and model family comes first? Which second family for cross-review? | M0 (first), M3 (second) |
-| 3 | Where do the VMs run (cloud provider, region, sizing), and which sandbox runtime (gVisor, Kata, Firecracker)? | M1 |
+| 1 | ~~Control-plane language~~ **Decided:** TypeScript | — |
+| 2 | Which harness and model family comes first? Which second family for cross-review? **First decided:** Claude Code | M3 (second) |
+| 3 | ~~Cloud and sandbox runtime~~ **Decided:** AWS, gVisor on EC2 (Firecracker possible later as a premium tier). Region and sizing still open | M1 (region, sizing) |
 | 4 | Which repository and which small, real bug will be the first test case? | M1 |
 | 5 | What are the initial budgets per task, per role, and per month? | M1 |
 | 6 | Who are the first approvers and reviewers, what may each approve, and how should they be contacted? | M2 |
