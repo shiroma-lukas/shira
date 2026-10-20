@@ -10,6 +10,7 @@ import { Ledger } from "../ledger/ledger.js";
 import { submit } from "../queue/intake.js";
 import { Settings } from "../queue/settings.js";
 import { githubFromEnv, runDispatcher, type SandboxMode } from "./dispatch.js";
+import { linkLines } from "./show.js";
 import { TaskStore, type Task } from "../queue/store.js";
 
 const USAGE = `usage: shira <command> [options]
@@ -101,6 +102,7 @@ async function main(db: Db, argv: string[]): Promise<void> {
       );
       console.log(`  scope ${task.scope.paths.join(", ")}`);
       const events = await store.events(id);
+      for (const l of linkLines(task, events)) console.log(l);
       if (task.status === "needs_decision") {
         const q = events.findLast((e) => e.toStatus === "needs_decision")?.payload.question as
           | { kind: string; text: string; options?: string[] }
