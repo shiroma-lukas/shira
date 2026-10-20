@@ -38,7 +38,7 @@ describe("S3TranscriptStore", () => {
     expect(uri).toBe("s3://b-1/cells/acme/t/r.jsonl");
   });
 
-  it("surfaces S3 errors so the run is recorded as failed, not silently lost", async () => {
+  it("surfaces S3 errors to the caller (the adapter records them on the run)", async () => {
     const failing = { send: async () => Promise.reject(new Error("AccessDenied")) };
     await expect(new S3TranscriptStore({ bucket: "b-1", client: failing }).write("t", "r", lines)).rejects.toThrow(/AccessDenied/);
   });
