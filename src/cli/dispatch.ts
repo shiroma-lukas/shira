@@ -6,7 +6,7 @@ import type { Db } from "../db/client.js";
 import { Dispatcher } from "../dispatcher/dispatcher.js";
 import { GitHubApp } from "../github/app.js";
 import { ClaudeCodeAdapter } from "../harness/claude-code.js";
-import { FileTranscriptStore } from "../harness/transcripts.js";
+import { transcriptStoreFromEnv } from "../harness/transcripts.js";
 import { EgressAdminClient } from "../egress/proxy.js";
 import { DockerSandboxProvider } from "../sandbox/docker.js";
 import { LocalSandboxProvider } from "../sandbox/local.js";
@@ -62,7 +62,7 @@ export async function runDispatcher(db: Db, config: LoadedConfig, mode: SandboxM
     db,
     config,
     adapters: new Map([
-      ["claude-code", new ClaudeCodeAdapter({ transcripts: new FileTranscriptStore(process.env.SHIRA_TRANSCRIPTS_DIR ?? ".shira/transcripts") })],
+      ["claude-code", new ClaudeCodeAdapter({ transcripts: transcriptStoreFromEnv(process.env) })],
     ]),
     sandboxes: sandboxes(mode, github, apiKey),
     codeHost: github,
