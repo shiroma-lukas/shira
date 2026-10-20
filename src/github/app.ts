@@ -6,7 +6,9 @@ import type { RepoAccess, RepoCredentials } from "../sandbox/sandbox.js";
 const PERMISSIONS: Record<RepoAccess | "pull_request", Record<string, "read" | "write">> = {
   read: { contents: "read" },
   write: { contents: "write" },
-  pull_request: { pull_requests: "write" },
+  // GitHub needs to read the head and base refs to open a PR ("not all refs are readable"
+  // otherwise). contents: read still can't push or merge.
+  pull_request: { pull_requests: "write", contents: "read" },
 };
 
 /** Refresh tokens this long before GitHub expires them (they live one hour). */

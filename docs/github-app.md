@@ -11,7 +11,7 @@ fewest permissions for the job:
 |---|---|---|---|
 | read | `contents: read` | Cloning the task repo, fetching the default branch | Platform git commands only |
 | write | `contents: write` | Pushing the task branch, after the agent has exited | Platform git commands only |
-| pull request | `pull_requests: write` | Opening the PR | The dispatcher process |
+| pull request | `pull_requests: write`, `contents: read` | Opening the PR (GitHub must read both branches) | The dispatcher process |
 
 Tokens go to individual git commands through `GIT_CONFIG_*` environment variables. They
 never appear in command lines, `.git/config`, or the agent's environment. The agent can

@@ -90,7 +90,10 @@ describe("GitHubApp", () => {
 
     expect(pr).toEqual({ number: 12, url: "https://github.com/acme/web/pull/12" });
     const tokenCall = gh.calls.find((c) => c.url.endsWith("/access_tokens"))!;
-    expect(tokenCall.body).toEqual({ repositories: ["web"], permissions: { metadata: "read", pull_requests: "write" } });
+    expect(tokenCall.body).toEqual({
+      repositories: ["web"],
+      permissions: { metadata: "read", pull_requests: "write", contents: "read" },
+    });
     const prCall = gh.calls.find((c) => c.url === "/repos/acme/web/pulls")!;
     expect(prCall.auth).toMatch(/^token ghs_/);
     expect(prCall.body).toMatchObject({ head: "shira/abc", base: "main", title: "Fix", body: "Body" });
