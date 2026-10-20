@@ -13,8 +13,8 @@
   "scope": { "repo": "example-org/example-repo", "paths": ["src/export/**", "test/export/**"] },
   "done_when": [
     "A regression test with a non-ASCII name fails before the fix and passes after",
-    "pnpm test passes after rebasing on main",
-    "PR opened against main"
+    "Changes committed on the task branch",
+    "pnpm test passes"
   ],
   "budget": { "usd": 3, "tokens": 2000000, "minutes": 30, "retries": 2 }
 }

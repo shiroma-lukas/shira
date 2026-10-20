@@ -1,0 +1,77 @@
+import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { ExecResult, Sandbox, SandboxProvider, SandboxSpec } from "./sandbox.js";
+
+const MAX_OUTPUT = 1_000_000;
+
+/** Runs a shell command in `cwd`, capturing at most MAX_OUTPUT bytes of each stream. */
+export function sh(command: string, cwd: string, timeoutMs = 10 * 60_000): Promise<ExecResult> {
+  return new Promise((resolve, reject) => {
+    const child = spawn("sh", ["-c", command], { cwd, stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (d: Buffer) => (stdout = (stdout + d).slice(-MAX_OUTPUT)));
+    child.stderr.on("data", (d: Buffer) => (stderr = (stderr + d).slice(-MAX_OUTPUT)));
+    const timer = setTimeout(() => child.kill("SIGKILL"), timeoutMs);
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+    child.on("close", (code, signal) => {
+      clearTimeout(timer);
+      resolve({ code: code ?? (signal ? 137 : 1), stdout, stderr });
+    });
+  });
+}
+
+async function mustSh(command: string, cwd: string): Promise<void> {
+  const r = await sh(command, cwd);
+  if (r.code !== 0) throw new Error(`${command} failed (${r.code}): ${r.stderr.trim()}`);
+}
+
+const q = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
+
+/**
+ * Development and test provider: a temp directory on the host. It provides NO
+ * isolation, credentials scoping, or egress control, so it must never run untrusted
+ * work. Production uses an isolated runtime (FR-E2; PRD open question 3).
+ */
+export class LocalSandboxProvider implements SandboxProvider {
+  constructor(
+    private readonly opts: {
+      unsafeNoIsolation: true;
+      /** Where to clone from; defaults to GitHub over HTTPS. */
+      cloneUrl?: (repo: string) => string;
+    },
+  ) {
+    if (opts.unsafeNoIsolation !== true) throw new Error("LocalSandboxProvider requires unsafeNoIsolation: true");
+  }
+
+  async create(spec: SandboxSpec): Promise<Sandbox> {
+    const root = await mkdtemp(join(tmpdir(), "atp-sandbox-"));
+    const path = join(root, "repo");
+    const url = this.opts.cloneUrl?.(spec.repo.repo) ?? `https://github.com/${spec.repo.repo}.git`;
+    try {
+      await mustSh(`git clone --quiet ${q(url)} repo`, root);
+      await mustSh(`git config user.name atp-worker && git config user.email atp-worker@localhost`, path);
+      if (spec.checkpointSha) {
+        await mustSh(`git fetch --quiet origin ${q(spec.branch)}`, path);
+        await mustSh(`git checkout --quiet -B ${q(spec.branch)} ${q(spec.checkpointSha)}`, path);
+      } else {
+        await mustSh(`git checkout --quiet -B ${q(spec.branch)} ${q(`origin/${spec.repo.defaultBranch}`)}`, path);
+      }
+    } catch (err) {
+      await rm(root, { recursive: true, force: true });
+      throw err;
+    }
+    return {
+      id: `local-${randomUUID()}`,
+      workspace: { repo: spec.repo.repo, branch: spec.branch, path },
+      exec: (command, o) => sh(command, path, o?.timeoutMs),
+      destroy: () => rm(root, { recursive: true, force: true }),
+    };
+  }
+}

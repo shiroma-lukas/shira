@@ -19,6 +19,9 @@ const USAGE = `usage: atp <command> [options]
   list [--status <status>] [--limit <n>]    list recent tasks
   show <task-id>                            task details, spend, and event log
   cancel <task-id> [--reason <text>]        cancel an unfinished task
+  answer <task-id> --text <text>            answer a task's open question; it resumes
+         [--choice <n>]
+  resume <task-id>                          requeue a paused or blocked task
   kill on|off|status                        pause or resume all agents
   budget monthly <usd>|none                 set the monthly org spend ceiling
 
@@ -87,7 +90,17 @@ async function main(db: Db, argv: string[]): Promise<void> {
           `${spend.minutes.toFixed(1)}/${task.budget.minutes} min`,
       );
       console.log(`  scope ${task.scope.paths.join(", ")}`);
-      for (const e of await store.events(id)) {
+      const events = await store.events(id);
+      if (task.status === "needs_decision") {
+        const q = events.findLast((e) => e.toStatus === "needs_decision")?.payload.question as
+          | { kind: string; text: string; options?: string[] }
+          | undefined;
+        if (q) {
+          console.log(`  question (${q.kind}): ${q.text}`);
+          q.options?.forEach((o, i) => console.log(`    [${i}] ${o}`));
+        }
+      }
+      for (const e of events) {
         const change = e.kind === "state_change" ? `${e.fromStatus ?? "-"} -> ${e.toStatus}` : e.kind;
         const payload = Object.keys(e.payload).length ? ` ${JSON.stringify(e.payload)}` : "";
         console.log(`  ${e.at.toISOString()}  ${e.actor.padEnd(14)} ${change}${payload}`);
@@ -98,6 +111,32 @@ async function main(db: Db, argv: string[]): Promise<void> {
       const { values, positionals } = parseArgs({ args: rest, allowPositionals: true, options: { reason: { type: "string" } } });
       const id = positionals[0] ?? fail("cancel needs a task id");
       console.log(line(await store.cancel(id, actor, values.reason)));
+      return;
+    }
+    case "answer": {
+      const { values, positionals } = parseArgs({
+        args: rest,
+        allowPositionals: true,
+        options: { text: { type: "string" }, choice: { type: "string" } },
+      });
+      const id = positionals[0] ?? fail("answer needs a task id");
+      if (!values.text) fail("answer needs --text");
+      const asked = (await store.events(id)).findLast((e) => e.toStatus === "needs_decision");
+      if (!asked) fail(`task ${id} has no open question`);
+      const task = await store.answer({
+        v: 1,
+        task_id: id,
+        in_reply_to: asked.payload.reply_id as string,
+        answered_by: actor,
+        text: values.text,
+        ...(values.choice !== undefined ? { choice: Number(values.choice) } : {}),
+      });
+      console.log(line(task));
+      return;
+    }
+    case "resume": {
+      const id = rest[0] ?? fail("resume needs a task id");
+      console.log(line(await store.transition(id, "queued", { actor, from: ["paused", "blocked"] })));
       return;
     }
     case "kill": {

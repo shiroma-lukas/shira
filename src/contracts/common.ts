@@ -34,6 +34,12 @@ export const Ref = z.discriminatedUnion("kind", [
     path: z.string().min(1),
     sha: z.string().regex(/^[0-9a-f]{7,40}$/).optional(),
   }),
+  z.object({
+    kind: z.literal("commit"),
+    repo: RepoName,
+    branch: z.string().min(1),
+    sha: z.string().regex(/^[0-9a-f]{40}$/),
+  }),
   z.object({ kind: z.literal("context"), path: z.string().min(1) }),
   z.object({ kind: z.literal("decision"), id: DecisionId }),
   z.object({ kind: z.literal("task"), id: TaskId }),

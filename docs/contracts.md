@@ -49,8 +49,8 @@ fresh branch, and starts the worker through `adapter.start({ envelope, workspace
   "scope": { "repo": "example-org/example-repo", "paths": ["src/export/**", "test/export/**"] },
   "done_when": [
     "A regression test with a non-ASCII name fails before the fix and passes after",
-    "pnpm test passes after rebasing on main",
-    "PR opened against main"
+    "Changes committed on the task branch",
+    "pnpm test passes"
   ],
   "budget": { "usd": 3, "tokens": 2000000, "minutes": 30, "retries": 2 }
 }
@@ -92,7 +92,7 @@ human thinks.
   "run_id": "5d6e7f8a-…",
   "harness": "claude-code",
   "repo": "example-org/example-repo",
-  "branch": "atp/7c1e2a4b-csv-unicode",
+  "branch": "atp/7c1e2a4b",
   "head_sha": "4f2a9c1e8b7d6a5c4b3a2f1e0d9c8b7a6f5e4d3c",
   "transcript_uri": "s3://atp-transcripts/7c1e2a4b/5d6e7f8a.jsonl",
   "session_ref": "cc-session-01JB6Z8K",
@@ -135,19 +135,32 @@ counts spending across both runs.
 {
   "status": "done",
   "in_reply_to": "0b8f1c2d-…",
-  "summary": "Names normalized to NFC before row filter (per D-0007).\nRegression test added; full suite green after rebase.",
-  "artifact": { "kind": "pr", "repo": "example-org/example-repo", "number": 418 }
+  "summary": "Names normalized to NFC before row filter (per D-0007).\nRegression test added; full suite green.",
+  "artifact": { "kind": "commit", "repo": "example-org/example-repo", "branch": "atp/7c1e2a4b", "sha": "9b8a7c6d…" }
 }
 ```
 
-The final reply answers the original envelope, not the answer. The task moves `running → done`.
+The final reply answers the original envelope, not the answer.
+
+### 6. The platform gates and opens the PR
+
+The worker's artifact is a commit, not a PR. Opening the PR is the platform's job, so the
+checks below are enforced in code rather than left to the agent (FR-O3, FR-S3). Still in the
+same sandbox, the dispatcher:
+
+1. rebases the branch on the latest default branch (a conflict counts as a failed attempt, and the retry starts from the new main),
+2. runs the repo's test command from its onboarding config, re-running up to `flaky.retries` times,
+3. scans the diff for secrets (a hit fails the task with no retry),
+4. pushes the branch and opens the PR with the standard description: summary, linked decision, risk, verification, and cost (FR-H4).
+
+Only then does the task move `running → done`, with the PR recorded in the event log.
 
 ### The status path
 
 ```
 queued → running → needs_decision → queued → running → done
-                   (checkpoint,      (answer
-                    sandbox gone)     received)
+                   (checkpoint,      (answer            (gate passed,
+                    sandbox gone)     received)          PR opened)
 ```
 
 Every step is written to `task_events`, which is append-only: a trigger rejects updates and

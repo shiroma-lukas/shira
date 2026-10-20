@@ -3,8 +3,10 @@
 Control plane for delegating software work to a managed team of AI agents. Humans discuss,
 decide, and review; agents do the work and open pull requests. See the [PRD](docs/prd.md).
 
-**Status:** M1 in progress. Tasks can be queued, inspected, and cancelled from the CLI; no
-agent runs them yet. Next: the dispatcher, sandbox, and Claude Code adapter.
+**Status:** M1 in progress. The dispatcher runs the full loop (claim, sandbox, harness,
+checkpoint and resume, rebase and test gate, secret scan, PR) and is tested end to end against
+a scripted harness and a local, unisolated sandbox. Still missing for M1: the Claude Code
+adapter, an isolated sandbox runtime, the GitHub App code host, and transcript storage.
 
 ## Layout
 
@@ -17,6 +19,9 @@ agent runs them yet. Next: the dispatcher, sandbox, and Claude Code adapter.
 | `src/db/` | Postgres client wrappers and migration runner |
 | `src/queue/` | Task store (queue, leases, retries, audit events), routing rules, intake, platform settings |
 | `src/ledger/` | Cost ledger and budget checks |
+| `src/dispatcher/` | Claim-to-PR loop and the standard PR description |
+| `src/sandbox/` | Sandbox interface and a local dev-only provider (no isolation) |
+| `src/security/` | Secret scanning for diffs and redaction |
 | `src/cli/` | The `atp` CLI |
 | `migrations/` | Postgres schema |
 | `config/` | Agent definitions and per-repo onboarding configs |

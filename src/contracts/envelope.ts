@@ -49,7 +49,10 @@ export const Reply = z
       (s) => s.split("\n").length <= MAX_SUMMARY_LINES,
       `summary must be at most ${MAX_SUMMARY_LINES} lines`,
     ),
-    /** The thing produced: usually a PR, or a context file for planners and architects. */
+    /**
+     * The thing produced. Workers return the commit on their task branch; the platform,
+     * not the worker, rebases, tests, and opens the PR (FR-O3, FR-S3).
+     */
     artifact: Ref.optional(),
     question: Question.optional(),
     blocked_by: z.array(TaskId).optional(),

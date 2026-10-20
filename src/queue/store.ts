@@ -1,5 +1,6 @@
 import { z } from "zod";
 import {
+  Answer,
   assertTransition,
   Budget,
   DecisionId,
@@ -200,8 +201,20 @@ export class TaskStore {
     await appendEvent(this.db, taskId, kind, actor, { payload });
   }
 
-  async transition(id: string, to: TaskStatus, opts: TransitionOptions): Promise<Task> {
-    return this.db.transaction((tx) => this.transitionIn(tx, id, to, opts));
+  /**
+   * Moves a task to `to`. `alongside` runs in the same transaction first, for writes that
+   * must land together with the state change (e.g. a checkpoint before needs_decision).
+   */
+  async transition(
+    id: string,
+    to: TaskStatus,
+    opts: TransitionOptions,
+    alongside?: (tx: SqlClient) => Promise<void>,
+  ): Promise<Task> {
+    return this.db.transaction(async (tx) => {
+      await alongside?.(tx);
+      return this.transitionIn(tx, id, to, opts);
+    });
   }
 
   private async transitionIn(
@@ -232,6 +245,32 @@ export class TaskStore {
     );
     await appendEvent(tx, id, "state_change", opts.actor, { from, to, payload: opts.payload ?? {} });
     return toTask(rows[0]!);
+  }
+
+  /**
+   * Records a human's answer to a needs_decision reply and requeues the task, which
+   * resumes from its checkpoint. Checking that the answerer may decide this question
+   * (approval matrix, FR-H2) arrives with M2.
+   */
+  async answer(input: Answer): Promise<Task> {
+    const answer = Answer.parse(input);
+    return this.db.transaction(async (tx) => {
+      const { rows } = await tx.query<{ payload: { reply_id?: string } }>(
+        `SELECT payload FROM task_events
+         WHERE task_id = $1 AND kind = 'state_change' AND to_status = 'needs_decision'
+         ORDER BY id DESC LIMIT 1`,
+        [answer.task_id],
+      );
+      const asked = rows[0]?.payload.reply_id;
+      if (asked !== answer.in_reply_to) {
+        throw new TaskConflictError(`answer is for ${answer.in_reply_to}, but the open question is ${asked ?? "none"}`);
+      }
+      return this.transitionIn(tx, answer.task_id, "queued", {
+        actor: answer.answered_by,
+        from: "needs_decision",
+        payload: { answer },
+      });
+    });
   }
 
   /** Cancels a task that hasn't finished. A running task's worker notices on its next lease renewal. */
