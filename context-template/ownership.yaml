@@ -1,0 +1,6 @@
+# Who owns what, and how to reach them (FR-H6). Identity ids match the identities table.
+owners:
+  - identity: tech-lead-1
+    repos: [example-org/example-repo]
+    paths: ["**"]
+    contact: { channel: slack, urgent: dm, digest: daily }

@@ -1,0 +1,11 @@
+{
+  "task_id": "7c1e2a4b-3f5d-4c8e-9a1b-2d3e4f5a6b7c",
+  "run_id": "5d6e7f8a-9b1c-4d2e-a3f4-5a6b7c8d9e1f",
+  "harness": "claude-code",
+  "repo": "example-org/example-repo",
+  "branch": "atp/7c1e2a4b-csv-unicode",
+  "head_sha": "4f2a9c1e8b7d6a5c4b3a2f1e0d9c8b7a6f5e4d3c",
+  "transcript_uri": "s3://atp-transcripts/7c1e2a4b/5d6e7f8a.jsonl",
+  "session_ref": "cc-session-01JB6Z8K",
+  "created_at": "2026-10-19T14:02:11Z"
+}

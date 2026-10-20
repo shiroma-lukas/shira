@@ -1,0 +1,10 @@
+{
+  "v": 1,
+  "id": "9e1f2a3b-4c5d-4e6f-b7a8-9b1c2d3e4f5a",
+  "task_id": "7c1e2a4b-3f5d-4c8e-9a1b-2d3e4f5a6b7c",
+  "in_reply_to": "0b8f1c2d-5e6a-4b7c-8d9e-1f2a3b4c5d6e",
+  "from": "worker",
+  "status": "done",
+  "summary": "Names normalized to NFC before row filter (per D-0007).\nRegression test added; full suite green after rebase.",
+  "artifact": { "kind": "pr", "repo": "example-org/example-repo", "number": 418 }
+}

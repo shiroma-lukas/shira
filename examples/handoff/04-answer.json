@@ -1,0 +1,9 @@
+{
+  "v": 1,
+  "task_id": "7c1e2a4b-3f5d-4c8e-9a1b-2d3e4f5a6b7c",
+  "in_reply_to": "3a4b5c6d-7e8f-4a1b-9c2d-3e4f5a6b7c8d",
+  "answered_by": "tech-lead-1",
+  "text": "Normalize to NFC; downstream systems compare names byte-wise.",
+  "choice": 0,
+  "decision_id": "D-0007"
+}

@@ -1,0 +1,16 @@
+# yaml-language-server: $schema=../../schemas/agent.json
+apiVersion: atp/v1
+kind: Agent
+role: worker
+description: Fixes one task in one repo and opens a PR. Terse output only.
+model:
+  primary: { harness: claude-code, model: claude-sonnet-5-5 }
+  fallbacks: []
+tools: [read, edit, shell, git]
+permissions: [read, branch, open_pr, comment]
+budget:
+  usd: 5
+  tokens: 3000000
+  minutes: 45
+  retries: 2
+instructions: roles/worker.md

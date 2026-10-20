@@ -1,0 +1,20 @@
+{
+  "v": 1,
+  "id": "0b8f1c2d-5e6a-4b7c-8d9e-1f2a3b4c5d6e",
+  "task_id": "7c1e2a4b-3f5d-4c8e-9a1b-2d3e4f5a6b7c",
+  "from": "orchestrator",
+  "to": "worker",
+  "goal": "Fix CSV export dropping rows whose customer name contains non-ASCII characters.",
+  "refs": [
+    { "kind": "thread", "provider": "cli", "id": "req-0142" },
+    { "kind": "file", "repo": "example-org/example-repo", "path": "src/export/csv.ts" },
+    { "kind": "context", "path": "conventions/testing.md" }
+  ],
+  "scope": { "repo": "example-org/example-repo", "paths": ["src/export/**", "test/export/**"] },
+  "done_when": [
+    "A regression test with a non-ASCII name fails before the fix and passes after",
+    "pnpm test passes after rebasing on main",
+    "PR opened against main"
+  ],
+  "budget": { "usd": 3, "tokens": 2000000, "minutes": 30, "retries": 2 }
+}

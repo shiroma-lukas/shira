@@ -1,0 +1,15 @@
+{
+  "v": 1,
+  "id": "3a4b5c6d-7e8f-4a1b-9c2d-3e4f5a6b7c8d",
+  "task_id": "7c1e2a4b-3f5d-4c8e-9a1b-2d3e4f5a6b7c",
+  "in_reply_to": "0b8f1c2d-5e6a-4b7c-8d9e-1f2a3b4c5d6e",
+  "from": "worker",
+  "status": "needs_decision",
+  "summary": "Repro'd: rows dropped when names arrive NFD-encoded.\nRegression test committed on branch; fix depends on normalization choice.",
+  "question": {
+    "kind": "technical",
+    "text": "Normalize names to NFC on export, or preserve input bytes and fix the row filter only?",
+    "options": ["Normalize to NFC", "Preserve bytes, fix filter only"],
+    "refs": [{ "kind": "file", "repo": "example-org/example-repo", "path": "src/export/csv.ts", "sha": "4f2a9c1" }]
+  }
+}

@@ -1,0 +1,142 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "apiVersion": {
+      "type": "string",
+      "const": "atp/v1"
+    },
+    "kind": {
+      "type": "string",
+      "const": "Agent"
+    },
+    "role": {
+      "type": "string",
+      "enum": [
+        "concierge",
+        "orchestrator",
+        "architect",
+        "planner",
+        "worker",
+        "reviewer",
+        "librarian"
+      ]
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1
+    },
+    "model": {
+      "type": "object",
+      "properties": {
+        "primary": {
+          "type": "object",
+          "properties": {
+            "harness": {
+              "type": "string",
+              "minLength": 1
+            },
+            "model": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "harness",
+            "model"
+          ]
+        },
+        "fallbacks": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "harness": {
+                "type": "string",
+                "minLength": 1
+              },
+              "model": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "harness",
+              "model"
+            ]
+          }
+        }
+      },
+      "required": [
+        "primary"
+      ]
+    },
+    "tools": {
+      "default": [],
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "permissions": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "read",
+          "branch",
+          "open_pr",
+          "comment",
+          "message",
+          "merge",
+          "deploy"
+        ]
+      }
+    },
+    "budget": {
+      "type": "object",
+      "properties": {
+        "usd": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "tokens": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        },
+        "minutes": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "retries": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10
+        }
+      },
+      "required": [
+        "usd",
+        "tokens",
+        "minutes",
+        "retries"
+      ]
+    },
+    "instructions": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "required": [
+    "apiVersion",
+    "kind",
+    "role",
+    "description",
+    "model",
+    "permissions",
+    "budget",
+    "instructions"
+  ]
+}
