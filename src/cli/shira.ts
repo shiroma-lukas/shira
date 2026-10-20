@@ -167,12 +167,15 @@ async function main(db: Db, argv: string[]): Promise<void> {
         : { kind: "docker", unsafeRuntime: rest.includes("--unsafe-runtime") };
       const config = await loadConfig(process.env.SHIRA_CONFIG ?? "config");
       if (!config.ok) fail(config.errors.map((e) => `${e.file}: ${e.message}`).join("\n"));
+      // SIGINT (Ctrl-C) and SIGTERM (systemd, containers) both finish the current task first.
       const stop = new AbortController();
-      process.once("SIGINT", () => {
-        console.log("stopping after the current task (Ctrl-C again to quit now)");
-        stop.abort();
-        process.once("SIGINT", () => process.exit(130));
-      });
+      for (const sig of ["SIGINT", "SIGTERM"] as const) {
+        process.once(sig, () => {
+          console.log(`${sig}: stopping after the current task (send again to quit now)`);
+          stop.abort();
+          process.once(sig, () => process.exit(130));
+        });
+      }
       await runDispatcher(db, config.config, mode, stop.signal);
       return;
     }

@@ -10,6 +10,9 @@ export interface SqlClient {
   query<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<{ rows: T[] }>;
 }
 
+/** Arbitrary constant identifying Shira's migration lock. */
+const MIGRATION_LOCK = 7_429_101;
+
 export const MIGRATIONS_DIR = fileURLToPath(new URL("../../migrations/", import.meta.url));
 
 /**
@@ -30,10 +33,17 @@ export async function migrate(db: Db, dir = MIGRATIONS_DIR): Promise<string[]> {
     if (done.has(file)) continue;
     const sql = await readFile(join(dir, file), "utf8");
     try {
-      await db.transaction(async (tx) => {
+      const ran = await db.transaction(async (tx) => {
+        // Several hosts may migrate at once on boot. The lock serializes them; whoever
+        // waited re-checks and skips what the first one already applied.
+        await tx.query("SELECT pg_advisory_xact_lock($1)", [MIGRATION_LOCK]);
+        const again = await tx.query("SELECT 1 FROM schema_migrations WHERE name = $1", [file]);
+        if (again.rows.length) return false;
         await tx.exec(sql);
         await tx.query("INSERT INTO schema_migrations (name) VALUES ($1)", [file]);
+        return true;
       });
+      if (!ran) continue;
     } catch (err) {
       throw new Error(`migration ${file} failed: ${(err as Error).message}`);
     }

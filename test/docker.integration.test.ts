@@ -60,7 +60,12 @@ describe.skipIf(!enabled)(`Docker sandbox (${runtime})`, () => {
       proxyUrl: "http://shira-egress:3128",
       egress: admin,
       cloneUrl: () => "file:///origin",
-      extraRunArgs: ["--volume", `${origin}:/origin:ro`],
+      // On Linux the bind-mounted origin belongs to the CI user, not the container's root,
+      // and git refuses repos owned by someone else unless marked safe.
+      extraRunArgs: [
+        "--volume", `${origin}:/origin:ro`,
+        "--env", "GIT_CONFIG_COUNT=1", "--env", "GIT_CONFIG_KEY_0=safe.directory", "--env", "GIT_CONFIG_VALUE_0=/origin",
+      ],
       harnessEnv: { SHIRA_TEST_SECRET: "visible-to-harness-only" },
     });
     const repo = RepoConfig.parse({
