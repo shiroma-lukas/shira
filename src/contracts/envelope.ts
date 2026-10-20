@@ -54,6 +54,8 @@ export const Reply = z
      * not the worker, rebases, tests, and opens the PR (FR-O3, FR-S3).
      */
     artifact: Ref.optional(),
+    /** Short imperative title for the artifact, e.g. a PR title: "Strip accents in slugify". */
+    title: terse(100).optional(),
     question: Question.optional(),
     blocked_by: z.array(TaskId).optional(),
   })

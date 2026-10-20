@@ -130,6 +130,22 @@ describe("ClaudeCodeAdapter", () => {
     expect(outcome.kind === "aborted" && outcome.detail).toMatch(/Not logged in/);
   });
 
+  it("passes the agent's title through", async () => {
+    const outcome = await run("done");
+    expect(outcome.kind === "reply" && outcome.reply.title).toBe("Make the app say fixed");
+  });
+
+  it("marks API rejections a retry can't fix as config_error, but not rate limits", async () => {
+    expect(await run("workspace_error")).toMatchObject({ kind: "aborted", reason: "config_error" });
+    expect(await run("rate_limited")).toMatchObject({ kind: "aborted", reason: "error" });
+  });
+
+  it("lists attachments with their local path in the prompt", async () => {
+    const ref = { kind: "thread" as const, provider: "github" as const, id: "o/r#7" };
+    await run("done", { ...input, envelope: { ...input.envelope, refs: [ref] }, attachments: [{ ref, path: "/workspace/refs/issue-7.md" }] });
+    expect((await lastArgs())[1]).toContain('"id":"o/r#7"} (full text: /workspace/refs/issue-7.md)');
+  });
+
   it("maps the budget stop to budget_exceeded", async () => {
     expect(await run("budget")).toMatchObject({ kind: "aborted", reason: "budget_exceeded" });
   });

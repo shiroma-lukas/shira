@@ -1,13 +1,17 @@
 import type { Ref } from "../contracts/index.js";
 import type { LoadedConfig } from "../config/load.js";
 import type { Db } from "../db/client.js";
+import type { IssueTracker } from "../dispatcher/pr.js";
 import { route, type IntakeRequest } from "./router.js";
 import { TaskStore, type Task } from "./store.js";
 
 export interface SubmitRequest extends IntakeRequest {
   requester: string;
   repo: string;
-  goal: string;
+  /** What to do. Optional when `issue` is given: the issue title becomes the goal. */
+  goal?: string;
+  /** A GitHub issue this task resolves. Its full text reaches the agent, and the PR closes it. */
+  issue?: number;
   /** Defaults to the whole repo. */
   paths?: string[];
   priority?: number;
@@ -19,7 +23,12 @@ export interface SubmitRequest extends IntakeRequest {
  * Normalizes a request into a queued task (FR-Q1): routes it, applies the role's
  * budget, checks the repo is onboarded, and logs the routing decision.
  */
-export async function submit(db: Db, config: LoadedConfig, req: SubmitRequest): Promise<Task> {
+export async function submit(
+  db: Db,
+  config: LoadedConfig,
+  req: SubmitRequest,
+  deps: { issues?: IssueTracker } = {},
+): Promise<Task> {
   const r = route(req);
   if (!r) throw new Error(`no routing rule for ${req.source} requests; escalate to a human`);
 
@@ -27,6 +36,18 @@ export async function submit(db: Db, config: LoadedConfig, req: SubmitRequest): 
   if (!agent) throw new Error(`no agent definition for role ${r.role}`);
   const repo = config.repos.find((c) => c.repo === req.repo);
   if (!repo) throw new Error(`repo ${req.repo} has no onboarding config`);
+
+  let goal = req.goal?.trim() ?? "";
+  let threadRef = req.threadRef;
+  if (req.issue !== undefined) {
+    if (!deps.issues) throw new Error("submitting from an issue needs GitHub access (SHIRA_GITHUB_APP_ID and key)");
+    const issue = await deps.issues.getIssue(req.repo, req.issue);
+    if (issue.state !== "open") throw new Error(`${req.repo}#${issue.number} is ${issue.state}`);
+    // The goal names the issue; its full text reaches the agent as an attachment.
+    goal = [`Resolve issue #${issue.number}: ${issue.title}`, goal].filter(Boolean).join(". ").slice(0, 500);
+    threadRef = { kind: "thread", provider: "github", id: `${req.repo}#${issue.number}` };
+  }
+  if (!goal) throw new Error("a task needs a goal or an issue");
 
   // Config files are the source of truth for which repos exist; the table carries the kill flag per repo.
   await db.query(
@@ -39,13 +60,13 @@ export async function submit(db: Db, config: LoadedConfig, req: SubmitRequest): 
     {
       requester: req.requester,
       repo: req.repo,
-      goal: req.goal,
+      goal,
       role: r.role,
       priority: req.priority ?? 0,
       budget: agent.budget,
       scope: { repo: req.repo, paths: req.paths?.length ? req.paths : ["**"] },
       contextRefs: req.contextRefs ?? [],
-      threadRef: req.threadRef ?? null,
+      threadRef: threadRef ?? null,
     },
     req.requester,
   );

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { RepoName, RunId, TaskId, Usage } from "./common.js";
+import { RepoName, RunId, TaskId, Usage, type Ref } from "./common.js";
 import type { Answer, Envelope, Question, Reply } from "./envelope.js";
 
 /**
@@ -55,6 +55,11 @@ export interface StartInput {
   tools: readonly string[];
   /** What is left of the task budget. Adapters enforce it mid-run where the harness allows. */
   remaining: { usd: number };
+  /**
+   * Local copies of refs the agent can't fetch itself (e.g. a private GitHub issue),
+   * written by the platform into the sandbox outside the repo.
+   */
+  attachments?: readonly { ref: Ref; path: string }[];
 }
 
 export interface ResumeInput extends StartInput {
@@ -82,7 +87,14 @@ interface RunOutcomeBase {
 /** How a run ended: the agent replied, or the platform stopped it. */
 export type RunOutcome =
   | (RunOutcomeBase & { kind: "reply"; reply: Reply })
-  | (RunOutcomeBase & { kind: "aborted"; reason: "cancelled" | "timeout" | "budget_exceeded" | "error"; detail?: string });
+  | (RunOutcomeBase & { kind: "aborted"; reason: AbortReason; detail?: string });
+
+/**
+ * Why a run stopped without a reply. `config_error` means retrying can't help (rejected
+ * credential, missing permission, invalid model): the task fails at once. `error` is
+ * anything else and is retried.
+ */
+export type AbortReason = "cancelled" | "timeout" | "budget_exceeded" | "config_error" | "error";
 
 /**
  * Contract every harness (Claude Code, and others from M3) implements (FR-X1).

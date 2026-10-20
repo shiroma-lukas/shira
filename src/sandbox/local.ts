@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { launch, sh } from "./process.js";
-import type { RepoCredentials, Sandbox, SandboxProvider, SandboxSpec } from "./sandbox.js";
+import { ATTACHMENT_NAME, type RepoCredentials, type Sandbox, type SandboxProvider, type SandboxSpec } from "./sandbox.js";
 
 async function mustSh(command: string, cwd: string, env?: Record<string, string>): Promise<void> {
   const r = await sh(command, cwd, undefined, env);
@@ -61,6 +61,13 @@ export class LocalSandboxProvider implements SandboxProvider {
       workspace: { repo: spec.repo.repo, branch: spec.branch, path },
       exec: async (command, o) => sh(command, path, o?.timeoutMs, await authEnv(o?.auth)),
       launch: (argv) => launch(argv, { cwd: path }),
+      async writeFile(name, content) {
+        if (!ATTACHMENT_NAME.test(name)) throw new Error(`invalid attachment name ${name}`);
+        await mkdir(join(root, "refs"), { recursive: true });
+        const file = join(root, "refs", name);
+        await writeFile(file, content);
+        return file;
+      },
       destroy: () => rm(root, { recursive: true, force: true }),
     };
   }

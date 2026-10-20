@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HarnessAdapter, ResumeInput, RunOutcome, SessionHandle, StartInput } from "../src/contracts/adapter.js";
 import type { Reply } from "../src/contracts/index.js";
-import type { CodeHost } from "../src/dispatcher/pr.js";
+import type { CodeHost, Issue, IssueTracker } from "../src/dispatcher/pr.js";
 import { sh } from "../src/sandbox/process.js";
 
 export type StepInput = (StartInput | ResumeInput) & {
@@ -76,11 +76,28 @@ export class ScriptedAdapter implements HarnessAdapter {
   }
 }
 
-export class FakeCodeHost implements CodeHost {
+export class FakeCodeHost implements CodeHost, IssueTracker {
   readonly prs: { repo: string; head: string; base: string; title: string; body: string }[] = [];
+  readonly comments: { repo: string; number: number; body: string }[] = [];
+  readonly issues = new Map<string, Issue>();
+  /** Errors thrown by the next openPullRequest calls, in order. */
+  readonly prFailures: Error[] = [];
+
   async openPullRequest(pr: FakeCodeHost["prs"][number]) {
+    const failure = this.prFailures.shift();
+    if (failure) throw failure;
     this.prs.push(pr);
     return { number: this.prs.length, url: `https://example.test/${pr.repo}/pull/${this.prs.length}` };
+  }
+
+  async getIssue(repo: string, number: number): Promise<Issue> {
+    const issue = this.issues.get(`${repo}#${number}`);
+    if (!issue) throw new Error(`no issue ${repo}#${number}`);
+    return issue;
+  }
+
+  async comment(repo: string, number: number, body: string) {
+    this.comments.push({ repo, number, body });
   }
 }
 

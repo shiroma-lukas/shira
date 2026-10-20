@@ -18,7 +18,7 @@ emit({ type: "assistant", message: { content: [{ type: "text", text: "Working. F
 switch (scenario) {
   case "done":
     execSync("echo fixed > app.txt && git commit --quiet -am 'fix app'");
-    result({ structured_output: { status: "done", summary: "Fixed app.txt." } });
+    result({ structured_output: { status: "done", summary: "Fixed app.txt.", title: "Make the app say fixed" } });
     break;
   case "ask":
     execSync("echo half > notes.txt");
@@ -26,6 +26,12 @@ switch (scenario) {
     break;
   case "auth_error":
     result({ is_error: true, result: "Not logged in · Please run /login", total_cost_usd: 0 });
+    break;
+  case "workspace_error":
+    result({ is_error: true, api_error_status: 400, result: "API Error: 400 This API key is not scoped to a workspace", total_cost_usd: 0 });
+    break;
+  case "rate_limited":
+    result({ is_error: true, api_error_status: 429, result: "API Error: 429 rate limited", total_cost_usd: 0 });
     break;
   case "budget":
     result({ subtype: "error_max_budget_usd", is_error: true });

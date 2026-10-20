@@ -110,6 +110,14 @@ describe.skipIf(!enabled)(`Docker sandbox (${runtime})`, () => {
     expect(Number(r.stdout)).toBeLessThan(500);
   }, 60_000);
 
+  it("writes attachments outside the repo", async () => {
+    const path = await sandbox.writeFile("issue-7.md", "# Title\n\nIt's \"quoted\" and has $dollars and `ticks`.\n");
+    expect(path).toBe("/workspace/refs/issue-7.md");
+    expect((await sandbox.exec(`cat ${path}`)).stdout).toBe("# Title\n\nIt's \"quoted\" and has $dollars and `ticks`.\n");
+    expect((await sandbox.exec("git status --porcelain")).stdout).toBe("");
+    await expect(sandbox.writeFile("../repo/evil.txt", "x")).rejects.toThrow(/invalid attachment name/);
+  });
+
   it("lets git reach GitHub through the proxy", async () => {
     const r = await sandbox.exec("git ls-remote --heads https://github.com/octocat/Hello-World.git");
     expect(r.stderr).toBe("");

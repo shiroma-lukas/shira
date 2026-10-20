@@ -24,6 +24,7 @@ const REPLY_SCHEMA = {
   properties: {
     status: { enum: ["done", "blocked", "needs_decision", "failed"] },
     summary: { type: "string", description: "At most three short lines." },
+    title: { type: "string", description: "When done: a short imperative title for the change, under 72 characters." },
     question: {
       type: "object",
       description: "Required when status is needs_decision.",
@@ -42,6 +43,7 @@ const REPLY_SCHEMA = {
 interface StructuredReply {
   status: Reply["status"];
   summary: string;
+  title?: string;
   question?: { kind: "technical" | "business"; text: string; options?: string[] };
   blocked_by?: string[];
 }
@@ -55,6 +57,7 @@ interface ResultEvent {
   total_cost_usd?: number;
   duration_ms?: number;
   result?: string;
+  api_error_status?: number | null;
   structured_output?: StructuredReply;
   usage?: {
     input_tokens?: number;
@@ -72,6 +75,22 @@ interface Session {
   done: Promise<RunOutcome>;
 }
 
+/** A ref, plus where to read it when the platform attached a local copy. */
+function refLine(ref: StartInput["envelope"]["refs"][number], input: StartInput): string {
+  const copy = input.attachments?.find((a) => JSON.stringify(a.ref) === JSON.stringify(ref));
+  return `- ${JSON.stringify(ref)}${copy ? ` (full text: ${copy.path})` : ""}`;
+}
+
+/**
+ * API rejections a retry can't fix: bad request (e.g. a key outside any workspace,
+ * an unknown model), bad or missing credentials, no permission. Rate limits (429) and
+ * server errors (5xx) stay retryable.
+ */
+function isConfigError(result: ResultEvent): boolean {
+  if (result.api_error_status) return [400, 401, 403, 404].includes(result.api_error_status);
+  return /API Error: 40[0134]\b/.test(result.result ?? "");
+}
+
 function renderTask(input: StartInput): string {
   const e = input.envelope;
   return [
@@ -83,10 +102,11 @@ function renderTask(input: StartInput): string {
     "",
     "Done when:",
     ...e.done_when.map((d) => `- ${d}`),
-    ...(e.refs.length ? ["", "References (load only what you need):", ...e.refs.map((r) => `- ${JSON.stringify(r)}`)] : []),
+    ...(e.refs.length ? ["", "References (load only what you need):", ...e.refs.map((r) => refLine(r, input))] : []),
     "",
     "Commit your work on the current branch. Do not push and do not open a pull request;",
-    "the platform rebases, tests, and opens it. When finished, return the structured reply:",
+    "the platform rebases, tests, and opens it. When done, include a short imperative title",
+    "for the change (it becomes the PR title). When finished, return the structured reply:",
     "done (work committed), needs_decision (one question for a human; commit work in",
     "progress first), blocked (waiting on other tasks), or failed (cannot be done).",
   ].join("\n");
@@ -235,7 +255,8 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
     if (result.subtype === "error_max_budget_usd") return { ...base, kind: "aborted", reason: "budget_exceeded" };
     // Claude Code can report subtype "success" with is_error true (e.g. auth failures).
     if (result.is_error || !result.structured_output) {
-      return { ...base, kind: "aborted", reason: "error", detail: `${result.subtype}: ${(result.result ?? "").slice(0, 500)}` };
+      const detail = `${result.subtype}: ${(result.result ?? "").slice(0, 500)}`;
+      return { ...base, kind: "aborted", reason: isConfigError(result) ? "config_error" : "error", detail };
     }
 
     return { ...base, kind: "reply", reply: await this.toReply(s, result.structured_output) };
@@ -251,6 +272,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
       from: e.to,
       status: out.status,
       summary: out.summary,
+      ...(out.title?.trim() ? { title: out.title.trim().slice(0, 100) } : {}),
       ...(out.status === "needs_decision" && out.question ? { question: { refs: [], ...out.question } } : {}),
       ...(out.status === "blocked" && out.blocked_by ? { blocked_by: out.blocked_by } : {}),
     };

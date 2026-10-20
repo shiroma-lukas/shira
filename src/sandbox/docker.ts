@@ -2,12 +2,23 @@ import { randomBytes } from "node:crypto";
 import { isIP } from "node:net";
 import type { EgressGrants } from "../egress/proxy.js";
 import { launch, run } from "./process.js";
-import type { ExecResult, RepoAccess, RepoCredentials, Sandbox, SandboxProvider, SandboxSpec } from "./sandbox.js";
+import {
+  ATTACHMENT_NAME,
+  type ExecResult,
+  type RepoAccess,
+  type RepoCredentials,
+  type Sandbox,
+  type SandboxProvider,
+  type SandboxSpec,
+} from "./sandbox.js";
 
 /** Hosts every sandbox may reach: the model API and the code host. Repos add their own (FR-E4). */
 export const DEFAULT_EGRESS = ["api.anthropic.com", "github.com", "*.githubusercontent.com"];
 
 const WORKDIR = "/workspace/repo";
+const REFS_DIR = "/workspace/refs";
+/** Attachments travel as one environment variable; Linux caps a single one at 128 KiB. */
+const MAX_ATTACHMENT_CHARS = 100_000;
 
 export interface DockerSandboxOptions {
   /** gVisor's runtime name. Anything else drops kernel isolation and must be explicit. */
@@ -166,6 +177,16 @@ export class DockerSandboxProvider implements SandboxProvider {
             },
           },
         );
+      },
+      writeFile: async (file, content) => {
+        if (!ATTACHMENT_NAME.test(file)) throw new Error(`invalid attachment name ${file}`);
+        const body = content.length > MAX_ATTACHMENT_CHARS ? `${content.slice(0, MAX_ATTACHMENT_CHARS)}\n[truncated]` : content;
+        const r = await this.execIn(name, `mkdir -p ${REFS_DIR} && printf '%s' "$SHIRA_ATTACHMENT" > ${REFS_DIR}/${file}`, {
+          env: { SHIRA_ATTACHMENT: body },
+          workdir: "/",
+        });
+        if (r.code !== 0) throw new Error(`writing attachment ${file} failed: ${r.stderr.trim().slice(-300)}`);
+        return `${REFS_DIR}/${file}`;
       },
       destroy: () => this.destroy(name),
     };

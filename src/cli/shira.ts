@@ -9,13 +9,14 @@ import { migrate } from "../db/migrate.js";
 import { Ledger } from "../ledger/ledger.js";
 import { submit } from "../queue/intake.js";
 import { Settings } from "../queue/settings.js";
-import { runDispatcher, type SandboxMode } from "./dispatch.js";
+import { githubFromEnv, runDispatcher, type SandboxMode } from "./dispatch.js";
 import { TaskStore, type Task } from "../queue/store.js";
 
 const USAGE = `usage: shira <command> [options]
 
   migrate                                   apply database migrations
   submit --repo <org/name> --goal <text>    queue a task
+         [--issue <n>]                      ...or resolve a GitHub issue (goal optional)
          [--path <glob>]... [--priority <n>]
   list [--status <status>] [--limit <n>]    list recent tasks
   show <task-id>                            task details, spend, and event log
@@ -61,11 +62,12 @@ async function main(db: Db, argv: string[]): Promise<void> {
         options: {
           repo: { type: "string" },
           goal: { type: "string" },
+          issue: { type: "string" },
           path: { type: "string", multiple: true },
           priority: { type: "string" },
         },
       });
-      if (!values.repo || !values.goal) fail("submit needs --repo and --goal");
+      if (!values.repo || (!values.goal && !values.issue)) fail("submit needs --repo and --goal or --issue");
       const config = await loadConfig(process.env.SHIRA_CONFIG ?? "config");
       if (!config.ok) fail(config.errors.map((e) => `${e.file}: ${e.message}`).join("\n"));
       const task = await submit(db, config.config, {
@@ -73,9 +75,10 @@ async function main(db: Db, argv: string[]): Promise<void> {
         requester: actor,
         repo: values.repo,
         goal: values.goal,
+        ...(values.issue ? { issue: Number(values.issue) } : {}),
         paths: values.path,
         priority: values.priority ? Number(values.priority) : 0,
-      });
+      }, values.issue ? { issues: await githubFromEnv() } : {});
       console.log(line(task));
       return;
     }

@@ -43,8 +43,16 @@ export interface Sandbox {
   exec(command: string, opts?: { timeoutMs?: number; auth?: RepoAccess }): Promise<ExecResult>;
   /** Starts a long-running process (the harness) in the workspace. */
   launch: LaunchProcess;
+  /**
+   * Writes a file for the agent to read, outside the repo so it never shows up in the
+   * diff. Returns its absolute path inside the sandbox.
+   */
+  writeFile(name: string, content: string): Promise<string>;
   destroy(): Promise<void>;
 }
+
+/** File names allowed for `writeFile`: no paths, so writes can't land inside the repo. */
+export const ATTACHMENT_NAME = /^[\w][\w.-]{0,99}$/;
 
 export interface SandboxProvider {
   /** Returns a sandbox with the repo cloned and `spec.branch` checked out. */

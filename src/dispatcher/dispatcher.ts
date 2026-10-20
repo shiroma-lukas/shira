@@ -19,7 +19,8 @@ import { Settings } from "../queue/settings.js";
 import { TaskStore, type Task } from "../queue/store.js";
 import type { Sandbox, SandboxProvider } from "../sandbox/sandbox.js";
 import { scanDiff } from "../security/secrets.js";
-import { prDescription, prTitle, type CodeHost } from "./pr.js";
+import { GitHubError } from "../github/app.js";
+import { parseIssueRef, prDescription, prTitle, type CodeHost, type Issue, type IssueTracker } from "./pr.js";
 
 export interface DispatcherDeps {
   db: Db;
@@ -28,6 +29,8 @@ export interface DispatcherDeps {
   adapters: ReadonlyMap<string, HarnessAdapter>;
   sandboxes: SandboxProvider;
   codeHost: CodeHost;
+  /** Reads issues for the agent and comments on them. Without it, issue links still work but nothing is posted. */
+  issues?: IssueTracker;
   /** Loads a role's instructions from the context repo by path. */
   instructions: (path: string) => Promise<string>;
   /** Unique per dispatcher process; recorded as the lease owner. */
@@ -52,6 +55,25 @@ const ZERO_USAGE = (model: string) => ({
 });
 
 const tail = (s: string, n = 2000) => (s.length > n ? `...${s.slice(-n)}` : s);
+
+/**
+ * Sandbox failures retrying can't fix: the repo or its credentials are wrong, egress is
+ * misconfigured, or the image doesn't exist. Anything else (daemon hiccup, network) retries.
+ */
+const PERMANENT_SANDBOX_ERROR =
+  /\b(401|403|404)\b|Authentication failed|Repository not found|could not read Username|Proxy CONNECT aborted|not on network|No such image|pull access denied/i;
+
+const isPermanentGitHubError = (err: unknown) => err instanceof GitHubError && err.permanent;
+
+/** A PR whose branch passed the gate and was pushed, waiting to be opened. */
+interface PendingPr {
+  type: "pr_pending";
+  head: string;
+  base: string;
+  title: string;
+  body: string;
+  reply_id: string;
+}
 const q = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 
 /**
@@ -93,7 +115,9 @@ export class Dispatcher {
     this.log("claimed", { task: task.id, attempt: task.attempts });
 
     try {
-      return { kind: "ran", taskId: task.id, status: await this.execute(task) };
+      const status = await this.execute(task);
+      await this.notifyIssue(task, status).catch((err) => this.log("issue comment failed", { error: (err as Error).message }));
+      return { kind: "ran", taskId: task.id, status };
     } catch (err) {
       // Infrastructure failure (database, sandbox host). Count it as a failed attempt if
       // we still hold the task; otherwise the lease reaper will.
@@ -122,6 +146,11 @@ export class Dispatcher {
     return this.store.transition(task.id, "failed", { actor: this.deps.owner, from: "running", payload });
   }
 
+  /** Fails without retrying: the cause is configuration, and another attempt would fail the same way. */
+  private failPermanently(task: Task, reason: string) {
+    return this.fail(task, { reason, permanent: true });
+  }
+
   private async execute(task: Task): Promise<TaskStatus> {
     const { config, adapters } = this.deps;
     const agent = config.agents.find((a) => a.role === task.role);
@@ -130,6 +159,10 @@ export class Dispatcher {
     if (!repo) return (await this.fail(task, { reason: `repo ${task.repo} has no onboarding config` })).status;
     const adapter = adapters.get(agent.model.primary.harness);
     if (!adapter) return (await this.fail(task, { reason: `no adapter for harness ${agent.model.primary.harness}` })).status;
+
+    // The branch already passed the gate and was pushed; only opening the PR failed.
+    const pending = await this.pendingPr(task.id);
+    if (pending) return this.openPr(task, pending);
 
     const spend = await this.ledger.taskSpend(task.id);
     const over = exceededBudget(task.budget, spend);
@@ -144,13 +177,24 @@ export class Dispatcher {
     try {
       sandbox = await this.deps.sandboxes.create({ taskId: task.id, repo, branch, checkpointSha: checkpoint?.head_sha });
     } catch (err) {
-      return (await this.retry(task, `sandbox: ${(err as Error).message}`)).status;
+      const message = `sandbox: ${(err as Error).message}`;
+      if (PERMANENT_SANDBOX_ERROR.test(message)) return (await this.failPermanently(task, message)).status;
+      return (await this.retry(task, message)).status;
     }
 
     try {
       for (const cmd of repo.setup) {
         const r = await sandbox.exec(cmd);
         if (r.code !== 0) return (await this.retry(task, `setup failed: ${cmd}: ${tail(r.stderr, 500)}`)).status;
+      }
+
+      let attachments;
+      try {
+        attachments = await this.attach(task, sandbox);
+      } catch (err) {
+        const message = `reading the task's issue failed: ${(err as Error).message}`;
+        if (isPermanentGitHubError(err)) return (await this.failPermanently(task, message)).status;
+        return (await this.retry(task, message)).status;
       }
 
       const model = agent.model.primary.model;
@@ -164,6 +208,7 @@ export class Dispatcher {
         instructions: await this.deps.instructions(agent.instructions),
         tools: agent.tools,
         remaining: { usd: task.budget.usd - spend.usd },
+        attachments,
       };
       const session = checkpoint
         ? await adapter.resume({ ...input, checkpoint, ...(await this.openQuestion(task.id, answer)) })
@@ -178,6 +223,9 @@ export class Dispatcher {
       if (outcome.kind === "aborted") {
         if (outcome.reason === "timeout" || outcome.reason === "budget_exceeded") {
           return (await this.fail(task, { reason: outcome.reason, detail: outcome.detail })).status;
+        }
+        if (outcome.reason === "config_error") {
+          return (await this.failPermanently(task, `harness configuration: ${outcome.detail ?? "rejected"}`)).status;
         }
         return (await this.retry(task, `${outcome.reason}: ${outcome.detail ?? "no detail"}`)).status;
       }
@@ -356,24 +404,92 @@ export class Dispatcher {
     if (push.code !== 0) return (await this.retry(task, `push failed: ${tail(push.stderr, 500)}`)).status;
 
     const spend = await this.ledger.taskSpend(task.id);
+    const issue = this.issueOf(task);
+    const pending: PendingPr = {
+      type: "pr_pending",
+      head: branch,
+      base,
+      title: prTitle(task, reply.title),
+      body: prDescription({
+        task,
+        summary: reply.summary,
+        closes: issue?.repo === task.repo ? issue.number : undefined,
+        testCommand: repo.test,
+        testAttempts,
+        diffStat,
+        spend,
+        runs: run.attempt,
+      }),
+      reply_id: reply.id,
+    };
+    // Recorded before opening: if opening fails, a retry opens this PR instead of re-running the agent.
+    await this.store.record(task.id, "note", this.deps.owner, { ...pending });
+    return this.openPr(task, pending);
+  }
+
+  private async openPr(task: Task, pending: PendingPr): Promise<TaskStatus> {
     let pr;
     try {
       pr = await this.deps.codeHost.openPullRequest({
         repo: task.repo,
-        head: branch,
-        base,
-        title: prTitle(task),
-        body: prDescription({ task, summary: reply.summary, testCommand: repo.test, testAttempts, diffStat, spend, runs: run.attempt }),
+        head: pending.head,
+        base: pending.base,
+        title: pending.title,
+        body: pending.body,
       });
     } catch (err) {
-      return (await this.retry(task, `opening PR failed: ${(err as Error).message}`)).status;
+      const message = `opening PR failed: ${(err as Error).message}`;
+      if (isPermanentGitHubError(err)) return (await this.failPermanently(task, message)).status;
+      return (await this.retry(task, message)).status;
     }
     const t = await this.store.transition(task.id, "done", {
       actor: this.deps.owner,
       from: "running",
-      payload: { pr: { repo: task.repo, number: pr.number, url: pr.url }, reply_id: reply.id },
+      payload: { pr: { repo: task.repo, number: pr.number, url: pr.url }, reply_id: pending.reply_id },
     });
     return t.status;
+  }
+
+  private async pendingPr(taskId: string): Promise<PendingPr | null> {
+    const { rows } = await this.deps.db.query<{ payload: PendingPr }>(
+      `SELECT payload FROM task_events
+       WHERE task_id = $1 AND kind = 'note' AND payload->>'type' = 'pr_pending'
+       ORDER BY id DESC LIMIT 1`,
+      [taskId],
+    );
+    return rows[0]?.payload ?? null;
+  }
+
+  /** The issue a task resolves, when it came from one. */
+  private issueOf(task: Task): { repo: string; number: number } | null {
+    const ref = task.threadRef;
+    return ref?.kind === "thread" && ref.provider === "github" ? parseIssueRef(ref.id) : null;
+  }
+
+  /** Writes the task's issue into the sandbox, since the agent can't read private issues itself. */
+  private async attach(task: Task, sandbox: Sandbox) {
+    const ref = this.issueOf(task);
+    if (!ref || !this.deps.issues || !task.threadRef) return [];
+    const issue: Issue = await this.deps.issues.getIssue(ref.repo, ref.number);
+    const path = await sandbox.writeFile(
+      `issue-${issue.number}.md`,
+      `# ${issue.title}\n\n${issue.body || "(no description)"}\n\n${issue.url}\n`,
+    );
+    return [{ ref: task.threadRef, path }];
+  }
+
+  /** Tells the issue what happened: the PR, or why the task failed. */
+  private async notifyIssue(task: Task, status: TaskStatus): Promise<void> {
+    const ref = this.issueOf(task);
+    if (!ref || !this.deps.issues || (status !== "done" && status !== "failed")) return;
+    const last = (await this.store.events(task.id)).findLast((e) => e.kind === "state_change");
+    const spend = await this.ledger.taskSpend(task.id);
+    const cost = `$${spend.usd.toFixed(2)}, ${spend.tokens.toLocaleString("en-US")} tokens`;
+    const body =
+      status === "done"
+        ? `Opened #${(last?.payload.pr as { number: number }).number} to fix this (task \`${task.id.slice(0, 8)}\`, ${cost}).`
+        : `Shira couldn't complete this (task \`${task.id.slice(0, 8)}\`, ${cost}):\n\n> ${String(last?.payload.reason ?? "unknown reason").slice(0, 500)}`;
+    await this.deps.issues.comment(ref.repo, ref.number, body);
   }
 
   /** The task's envelope. Created on first dispatch and reused on resume, so replies keep answering it. */

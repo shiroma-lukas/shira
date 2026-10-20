@@ -9,9 +9,31 @@ export interface CodeHost {
   }>;
 }
 
+export interface Issue {
+  number: number;
+  title: string;
+  body: string;
+  state: "open" | "closed";
+  url: string;
+}
+
+/** Reads and comments on issues. Production: the GitHub App (needs Issues: read and write). */
+export interface IssueTracker {
+  getIssue(repo: string, number: number): Promise<Issue>;
+  comment(repo: string, number: number, body: string): Promise<void>;
+}
+
+/** Parses a GitHub thread ref id, "org/name#12". */
+export function parseIssueRef(id: string): { repo: string; number: number } | null {
+  const m = /^([\w.-]+\/[\w.-]+)#(\d+)$/.exec(id);
+  return m ? { repo: m[1]!, number: Number(m[2]) } : null;
+}
+
 export interface PrDescriptionInput {
   task: Task;
   summary: string;
+  /** Issue number this PR resolves; adds a closing keyword so merging closes it. */
+  closes?: number;
   testCommand: string;
   testAttempts: number;
   diffStat: string;
@@ -19,10 +41,11 @@ export interface PrDescriptionInput {
   runs: number;
 }
 
-/** First line of the goal, trimmed to a reasonable PR title length. */
-export function prTitle(task: Task): string {
-  const first = task.goal.split("\n")[0]!.trim();
-  return first.length > 72 ? `${first.slice(0, 69)}...` : first;
+/** The agent's title when it gave one, else the goal's first sentence, trimmed to PR title length. */
+export function prTitle(task: Task, agentTitle?: string): string {
+  const source = agentTitle?.trim() || task.goal.split(/\n|(?<=\.)\s/)[0]!.trim();
+  const title = source.replace(/\.$/, "");
+  return title.length > 72 ? `${title.slice(0, 69)}...` : title;
 }
 
 /**
@@ -35,6 +58,7 @@ export function prDescription(i: PrDescriptionInput): string {
     "## Summary",
     "",
     i.summary,
+    ...(i.closes ? ["", `Fixes #${i.closes}`] : []),
     "",
     "## Decision",
     "",

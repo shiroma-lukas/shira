@@ -1,14 +1,17 @@
 import { createSign } from "node:crypto";
-import type { CodeHost } from "../dispatcher/pr.js";
+import type { CodeHost, Issue, IssueTracker } from "../dispatcher/pr.js";
 import type { RepoAccess, RepoCredentials } from "../sandbox/sandbox.js";
 
 /** Installation token permissions per access level. Nothing beyond what the platform needs. */
-const PERMISSIONS: Record<RepoAccess | "pull_request", Record<string, "read" | "write">> = {
+type TokenPurpose = RepoAccess | "pull_request" | "issues";
+
+const PERMISSIONS: Record<TokenPurpose, Record<string, "read" | "write">> = {
   read: { contents: "read" },
   write: { contents: "write" },
   // GitHub needs to read the head and base refs to open a PR ("not all refs are readable"
   // otherwise). contents: read still can't push or merge.
   pull_request: { pull_requests: "write", contents: "read" },
+  issues: { issues: "write" },
 };
 
 /** Refresh tokens this long before GitHub expires them (they live one hour). */
@@ -34,6 +37,11 @@ export class GitHubError extends Error {
   ) {
     super(`GitHub ${method} ${path} failed: ${status} ${body}`);
   }
+
+  /** Retrying can't fix these: bad credentials, missing permission, missing resource, invalid request. */
+  get permanent(): boolean {
+    return [401, 403, 404, 422].includes(this.status);
+  }
 }
 
 const b64url = (data: string | Buffer) => Buffer.from(data).toString("base64url");
@@ -43,7 +51,7 @@ const b64url = (data: string | Buffer) => Buffer.from(data).toString("base64url"
  * token scoped to one repository and the minimum permissions for the job, so a task
  * can never touch another repo, and only the platform ever holds write access.
  */
-export class GitHubApp implements CodeHost, RepoCredentials {
+export class GitHubApp implements CodeHost, IssueTracker, RepoCredentials {
   private readonly api: string;
   private readonly git: string;
   private readonly fetch: typeof fetch;
@@ -92,7 +100,7 @@ export class GitHubApp implements CodeHost, RepoCredentials {
   }
 
   /** An installation token for one repo with one permission set, cached until near expiry. */
-  async token(repo: string, purpose: RepoAccess | "pull_request"): Promise<string> {
+  async token(repo: string, purpose: TokenPurpose): Promise<string> {
     const key = `${repo}:${purpose}`;
     const cached = this.tokens.get(key);
     if (cached && cached.expiresAt - REFRESH_MARGIN_MS > this.now()) return cached.token;
@@ -152,5 +160,21 @@ export class GitHubApp implements CodeHost, RepoCredentials {
       if (!open[0]) throw err;
       return { number: open[0].number, url: open[0].html_url };
     }
+  }
+
+  async getIssue(repo: string, number: number): Promise<Issue> {
+    const token = await this.token(repo, "issues");
+    const i = await this.request<{ number: number; title: string; body: string | null; state: "open" | "closed"; html_url: string; pull_request?: unknown }>(
+      "GET",
+      `/repos/${repo}/issues/${number}`,
+      `token ${token}`,
+    );
+    if (i.pull_request) throw new Error(`${repo}#${number} is a pull request, not an issue`);
+    return { number: i.number, title: i.title, body: i.body ?? "", state: i.state, url: i.html_url };
+  }
+
+  async comment(repo: string, number: number, body: string): Promise<void> {
+    const token = await this.token(repo, "issues");
+    await this.request("POST", `/repos/${repo}/issues/${number}/comments`, `token ${token}`, { body });
   }
 }

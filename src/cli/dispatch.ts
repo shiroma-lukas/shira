@@ -46,12 +46,16 @@ function sandboxes(mode: SandboxMode, github: GitHubApp, apiKey: string): Sandbo
   });
 }
 
-/** Runs a dispatcher with the real GitHub App and Claude Code. */
-export async function runDispatcher(db: Db, config: LoadedConfig, mode: SandboxMode, signal: AbortSignal): Promise<void> {
-  const github = new GitHubApp({
+export async function githubFromEnv(): Promise<GitHubApp> {
+  return new GitHubApp({
     appId: required("SHIRA_GITHUB_APP_ID"),
     privateKey: await readFile(required("SHIRA_GITHUB_PRIVATE_KEY_PATH"), "utf8"),
   });
+}
+
+/** Runs a dispatcher with the real GitHub App and Claude Code. */
+export async function runDispatcher(db: Db, config: LoadedConfig, mode: SandboxMode, signal: AbortSignal): Promise<void> {
+  const github = await githubFromEnv();
   const apiKey = required("ANTHROPIC_API_KEY"); // Claude Code runs with --bare, which ignores interactive logins.
 
   const dispatcher = new Dispatcher({
@@ -62,6 +66,7 @@ export async function runDispatcher(db: Db, config: LoadedConfig, mode: SandboxM
     ]),
     sandboxes: sandboxes(mode, github, apiKey),
     codeHost: github,
+    issues: github,
     instructions: contextLoader(process.env.SHIRA_CONTEXT_DIR ?? "context-template"),
     owner: `dispatcher-${hostname()}-${process.pid}`,
     log: (m, f) => console.log(new Date().toISOString(), m, f ? JSON.stringify(f) : ""),
