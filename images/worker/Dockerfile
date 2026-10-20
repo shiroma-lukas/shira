@@ -3,7 +3,10 @@
 FROM node:22-bookworm
 
 ARG CLAUDE_CODE_VERSION=2.1.304
-RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} \
+ARG PNPM_VERSION=10.24.0
+# pnpm is installed at build time: sandboxes reach the registry only through the egress proxy,
+# and corepack's on-demand download is one more client to keep proxy-compatible.
+RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} pnpm@${PNPM_VERSION} \
  && apt-get update \
  && apt-get install -y --no-install-recommends ripgrep \
  && rm -rf /var/lib/apt/lists/*

@@ -1,0 +1,20 @@
+# Shira works on its own code. These paths are its safeguards and its agents' powers:
+# a change here always gets the owner's review, whoever (or whatever) wrote it.
+
+# Isolation, egress, secrets, and repository credentials
+/src/sandbox/                    @shiroma-lukas
+/src/egress/                     @shiroma-lukas
+/src/security/                   @shiroma-lukas
+/src/github/                     @shiroma-lukas
+
+# Wire contracts and permission ceilings
+/src/contracts/                  @shiroma-lukas
+
+# What agents may do, spend, and are told
+/config/                         @shiroma-lukas
+/context-template/roles/         @shiroma-lukas
+
+# Schema, images, and CI (CI is what verifies all of the above)
+/migrations/                     @shiroma-lukas
+/images/                         @shiroma-lukas
+/.github/                        @shiroma-lukas

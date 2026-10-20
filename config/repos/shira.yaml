@@ -1,0 +1,14 @@
+# yaml-language-server: $schema=../../schemas/repo.json
+# Shira working on itself. Docker and real-Postgres tests skip without their env vars,
+# so the gate runs the unit and PGlite tests; CI runs the rest on every PR.
+apiVersion: shira/v1
+kind: Repo
+repo: shiroma-lukas/shira
+defaultBranch: main
+image: shira-worker:latest
+setup:
+  - pnpm install --frozen-lockfile
+test: pnpm typecheck && pnpm test
+egress:
+  allow: [registry.npmjs.org]
+limits: { minutes: 45, cpus: 2, memoryMb: 4096 }
