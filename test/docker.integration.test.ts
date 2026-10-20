@@ -2,6 +2,9 @@
 // (runsc) by default; set SHIRA_TEST_DOCKER_RUNTIME=runc on hosts without gVisor (macOS)
 // to exercise everything except the kernel isolation itself.
 import { randomBytes } from "node:crypto";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { RepoConfig } from "../src/contracts/index.js";
@@ -54,18 +57,18 @@ describe.skipIf(!enabled)(`Docker sandbox (${runtime})`, () => {
     }
 
     const origin = await makeOrigin();
+    const bundleDir = await mkdtemp(join(tmpdir(), "shira-bundle-"));
+    const bundled = await run(["git", "-C", origin, "bundle", "create", join(bundleDir, "origin.bundle"), "--all"]);
+    if (bundled.code !== 0) throw new Error(bundled.stderr);
     provider = new DockerSandboxProvider({
       runtime: runtime === "runsc" ? "runsc" : { unsafe: runtime },
       network,
       proxyUrl: "http://shira-egress:3128",
       egress: admin,
-      cloneUrl: () => "file:///origin",
-      // On Linux the bind-mounted origin belongs to the CI user, not the container's root,
-      // and git refuses repos owned by someone else unless marked safe.
-      extraRunArgs: [
-        "--volume", `${origin}:/origin:ro`,
-        "--env", "GIT_CONFIG_COUNT=1", "--env", "GIT_CONFIG_KEY_0=safe.directory", "--env", "GIT_CONFIG_VALUE_0=/origin",
-      ],
+      // Clone from a bundle: on Linux a bind-mounted repo belongs to the CI user, not the
+      // container's root, and git refuses to read repos owned by someone else.
+      cloneUrl: () => "/origin/origin.bundle",
+      extraRunArgs: ["--volume", `${bundleDir}:/origin:ro`],
       harnessEnv: { SHIRA_TEST_SECRET: "visible-to-harness-only" },
     });
     const repo = RepoConfig.parse({
