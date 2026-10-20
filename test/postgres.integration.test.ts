@@ -1,13 +1,15 @@
 // Runs against a real Postgres, because PGlite has a single connection and cannot
-// exercise concurrent claims. Skipped unless SHIRA_TEST_DATABASE_URL is set; it drops and
-// recreates the public schema, so never point it at a database you care about.
+// exercise concurrent claims. Skipped unless SHIRA_TEST_DATABASE_URL is set (environment or
+// .env); it drops and recreates the public schema, so never point it at a database you care about.
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { loadDotEnv } from "../src/cli/env.js";
 import { fromPool, type Db } from "../src/db/client.js";
 import { migrate } from "../src/db/migrate.js";
 import { TaskStore } from "../src/queue/store.js";
 import { newTask } from "./helpers.js";
 
+loadDotEnv();
 const url = process.env.SHIRA_TEST_DATABASE_URL;
 
 describe.skipIf(!url)("Postgres integration", () => {
