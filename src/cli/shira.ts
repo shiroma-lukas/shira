@@ -10,6 +10,7 @@ import { Ledger } from "../ledger/ledger.js";
 import { submit } from "../queue/intake.js";
 import { Settings } from "../queue/settings.js";
 import { githubFromEnv, runDispatcher, type SandboxMode } from "./dispatch.js";
+import { loadDotEnv } from "./env.js";
 import { linkLines } from "./show.js";
 import { TaskStore, type Task } from "../queue/store.js";
 
@@ -33,7 +34,8 @@ const USAGE = `usage: shira <command> [options]
            [--unsafe-runtime]               allow SHIRA_SANDBOX_RUNTIME other than runsc (e.g. runc on macOS)
            [--unsafe-local-sandbox]         run agents directly on this machine, no isolation
 
-env: DATABASE_URL (default postgres://shira:shira@localhost:54329/shira), SHIRA_CONFIG (default ./config)
+env: from the environment, then ./.env if present
+     DATABASE_URL (default postgres://shira:shira@localhost:54329/shira), SHIRA_CONFIG (default ./config)
      dispatch needs SHIRA_GITHUB_APP_ID, SHIRA_GITHUB_PRIVATE_KEY_PATH, ANTHROPIC_API_KEY, and for
      Docker SHIRA_EGRESS_ADMIN_TOKEN; see docs/self-hosting.md for the optional ones`;
 
@@ -200,6 +202,7 @@ async function main(db: Db, argv: string[]): Promise<void> {
   }
 }
 
+loadDotEnv();
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL ?? "postgres://shira:shira@localhost:54329/shira" });
 try {
   await main(fromPool(pool), process.argv.slice(2));

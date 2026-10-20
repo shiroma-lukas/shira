@@ -49,6 +49,9 @@ Then submit work from another terminal with `pnpm shira submit --repo org/repo -
 
 ## Settings
 
+Set these in the environment or in `.env` at the repo root (see `.env.example`); the
+environment wins. Docker Compose reads the same file.
+
 | Variable | Default | Purpose |
 |---|---|---|
 | `DATABASE_URL` | `postgres://shira:shira@localhost:54329/shira` | Postgres |

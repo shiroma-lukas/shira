@@ -47,7 +47,9 @@ pnpm validate-config
 pnpm schemas          # regenerate schemas/ after changing a contract
 ```
 
-Running the CLI against a local database (port 54329, to avoid clashing with a local Postgres):
+Running the CLI against a local database (port 54329, to avoid clashing with a local Postgres).
+The CLI and tests read `.env` if present (see `.env.example`); set `DATABASE_URL` there to use
+a Postgres you already run instead:
 
 ```sh
 docker compose up -d --wait
