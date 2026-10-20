@@ -110,6 +110,12 @@ describe.skipIf(!enabled)(`Docker sandbox (${runtime})`, () => {
     expect(Number(r.stdout)).toBeLessThan(500);
   }, 60_000);
 
+  it("lets git reach GitHub through the proxy", async () => {
+    const r = await sandbox.exec("git ls-remote --heads https://github.com/octocat/Hello-World.git");
+    expect(r.stderr).toBe("");
+    expect(r.stdout).toMatch(/refs\/heads\/master/);
+  }, 60_000);
+
   it("is refused by the proxy for other hosts", async () => {
     const r = await sandbox.exec("curl -sS -o /dev/null --max-time 20 https://example.com/");
     expect(r.code).not.toBe(0);

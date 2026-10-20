@@ -96,6 +96,10 @@ export class DockerSandboxProvider implements SandboxProvider {
           ...Object.keys(proxyEnv).flatMap((k) => ["--env", k]),
           "--env",
           "NO_PROXY=",
+          // git otherwise sends proxy credentials only after a 407 challenge, retrying on
+          // the same connection, which the proxy closes. Basic up front avoids the round trip.
+          "--env",
+          "GIT_HTTP_PROXY_AUTHMETHOD=basic",
           ...proxyHost,
           ...(this.opts.extraRunArgs ?? []),
           "--entrypoint",
