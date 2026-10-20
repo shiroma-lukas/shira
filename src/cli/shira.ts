@@ -28,6 +28,7 @@ const USAGE = `usage: shira <command> [options]
   budget monthly <usd>|none                 set the monthly org spend ceiling
   dispatch                                  run tasks in gVisor sandboxes (needs the egress proxy:
                                             docker compose --profile sandbox up)
+           [--concurrency <n>]              tasks to run at once (default 1)
            [--unsafe-runtime]               allow SHIRA_SANDBOX_RUNTIME other than runsc (e.g. runc on macOS)
            [--unsafe-local-sandbox]         run agents directly on this machine, no isolation
 
@@ -165,9 +166,19 @@ async function main(db: Db, argv: string[]): Promise<void> {
       return;
     }
     case "dispatch": {
-      const mode: SandboxMode = rest.includes("--unsafe-local-sandbox")
+      const { values: flags } = parseArgs({
+        args: rest,
+        options: {
+          concurrency: { type: "string", default: "1" },
+          "unsafe-runtime": { type: "boolean", default: false },
+          "unsafe-local-sandbox": { type: "boolean", default: false },
+        },
+      });
+      const concurrency = Number(flags.concurrency);
+      if (!Number.isInteger(concurrency) || concurrency < 1) fail("--concurrency must be a positive integer");
+      const mode: SandboxMode = flags["unsafe-local-sandbox"]
         ? { kind: "local-unsafe" }
-        : { kind: "docker", unsafeRuntime: rest.includes("--unsafe-runtime") };
+        : { kind: "docker", unsafeRuntime: flags["unsafe-runtime"] };
       const config = await loadConfig(process.env.SHIRA_CONFIG ?? "config");
       if (!config.ok) fail(config.errors.map((e) => `${e.file}: ${e.message}`).join("\n"));
       // SIGINT (Ctrl-C) and SIGTERM (systemd, containers) both finish the current task first.
@@ -179,7 +190,7 @@ async function main(db: Db, argv: string[]): Promise<void> {
           process.once(sig, () => process.exit(130));
         });
       }
-      await runDispatcher(db, config.config, mode, stop.signal);
+      await runDispatcher(db, config.config, mode, stop.signal, concurrency);
       return;
     }
     default:
