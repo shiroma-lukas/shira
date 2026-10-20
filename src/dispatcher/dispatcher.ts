@@ -4,6 +4,7 @@ import type { HarnessAdapter, RunOutcome, SessionHandle } from "../contracts/ada
 import {
   Answer,
   Envelope,
+  Question,
   Reply,
   type AgentDefinition,
   type Ref,
@@ -158,11 +159,14 @@ export class Dispatcher {
         runId: run.id,
         envelope,
         workspace: sandbox.workspace,
+        launch: sandbox.launch,
         model,
         instructions: await this.deps.instructions(agent.instructions),
+        tools: agent.tools,
+        remaining: { usd: task.budget.usd - spend.usd },
       };
       const session = checkpoint
-        ? await adapter.resume({ ...input, checkpoint, ...(answer ? { answer } : {}) })
+        ? await adapter.resume({ ...input, checkpoint, ...(await this.openQuestion(task.id, answer)) })
         : await adapter.start(input);
 
       const limitMs = Math.min(task.budget.minutes - spend.minutes, repo.limits.minutes) * 60_000;
@@ -398,6 +402,19 @@ export class Dispatcher {
     });
     await this.store.record(task.id, "message", "orchestrator", { type: "envelope", envelope });
     return envelope;
+  }
+
+  /** The question and answer to hand a resumed run, if the task was paused on a decision. */
+  private async openQuestion(taskId: string, answer: Answer | undefined): Promise<{ question?: Question; answer?: Answer }> {
+    if (!answer) return {};
+    const { rows } = await this.deps.db.query<{ payload: { question?: unknown } }>(
+      `SELECT payload FROM task_events
+       WHERE task_id = $1 AND kind = 'state_change' AND to_status = 'needs_decision'
+       ORDER BY id DESC LIMIT 1`,
+      [taskId],
+    );
+    const question = Question.safeParse(rows[0]?.payload.question);
+    return question.success ? { question: question.data, answer } : { answer };
   }
 
   /** The answer that requeued this task, if it was requeued from needs_decision. */

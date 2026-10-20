@@ -5,8 +5,9 @@ decide, and review; agents do the work and open pull requests. See the [PRD](doc
 
 **Status:** M1 in progress. The dispatcher runs the full loop (claim, sandbox, harness,
 checkpoint and resume, rebase and test gate, secret scan, PR) and is tested end to end against
-a scripted harness and a local, unisolated sandbox. Still missing for M1: the Claude Code
-adapter, an isolated sandbox runtime, the GitHub App code host, and transcript storage.
+a scripted harness and a local, unisolated sandbox. The Claude Code adapter runs headless
+(`claude -p --bare`) with redacted transcripts. Still missing for M1: an isolated sandbox
+runtime and the GitHub App code host.
 
 ## Layout
 
@@ -20,6 +21,7 @@ adapter, an isolated sandbox runtime, the GitHub App code host, and transcript s
 | `src/queue/` | Task store (queue, leases, retries, audit events), routing rules, intake, platform settings |
 | `src/ledger/` | Cost ledger and budget checks |
 | `src/dispatcher/` | Claim-to-PR loop and the standard PR description |
+| `src/harness/` | Claude Code adapter and transcript storage |
 | `src/sandbox/` | Sandbox interface and a local dev-only provider (no isolation) |
 | `src/security/` | Secret scanning for diffs and redaction |
 | `src/cli/` | The `shira` CLI |

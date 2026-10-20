@@ -1,4 +1,4 @@
-import type { Workspace } from "../contracts/adapter.js";
+import type { LaunchProcess, Workspace } from "../contracts/adapter.js";
 import type { RepoConfig } from "../contracts/index.js";
 
 export interface SandboxSpec {
@@ -24,6 +24,8 @@ export interface Sandbox {
   readonly id: string;
   readonly workspace: Workspace;
   exec(command: string, opts?: { timeoutMs?: number }): Promise<ExecResult>;
+  /** Starts a long-running process (the harness) in the workspace. */
+  launch: LaunchProcess;
   destroy(): Promise<void>;
 }
 

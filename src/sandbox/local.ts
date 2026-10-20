@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process";
+import { createInterface } from "node:readline";
+import type { HarnessProcess } from "../contracts/adapter.js";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -25,6 +27,27 @@ export function sh(command: string, cwd: string, timeoutMs = 10 * 60_000): Promi
       resolve({ code: code ?? (signal ? 137 : 1), stdout, stderr });
     });
   });
+}
+
+/** Spawns argv directly (no shell) in `cwd`, streaming stdout by line. */
+export function launch(argv: string[], cwd: string): HarnessProcess {
+  const [cmd, ...args] = argv;
+  if (!cmd) throw new Error("launch needs a command");
+  const child = spawn(cmd, args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
+  let stderr = "";
+  child.stderr.on("data", (d: Buffer) => (stderr = (stderr + d).slice(-MAX_OUTPUT)));
+  const exited = new Promise<{ code: number; stderr: string }>((resolve) => {
+    child.on("error", (err) => resolve({ code: 127, stderr: `${stderr}${err.message}` }));
+    child.on("close", (code, signal) => resolve({ code: code ?? (signal ? 137 : 1), stderr }));
+  });
+  return {
+    lines: createInterface({ input: child.stdout, crlfDelay: Infinity }),
+    exited,
+    kill() {
+      child.kill("SIGTERM");
+      setTimeout(() => child.exitCode === null && child.kill("SIGKILL"), 5000).unref();
+    },
+  };
 }
 
 async function mustSh(command: string, cwd: string): Promise<void> {
@@ -71,6 +94,7 @@ export class LocalSandboxProvider implements SandboxProvider {
       id: `local-${randomUUID()}`,
       workspace: { repo: spec.repo.repo, branch: spec.branch, path },
       exec: (command, o) => sh(command, path, o?.timeoutMs),
+      launch: (argv) => launch(argv, path),
       destroy: () => rm(root, { recursive: true, force: true }),
     };
   }

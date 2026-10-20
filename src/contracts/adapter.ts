@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { RepoName, RunId, TaskId, Usage } from "./common.js";
-import type { Answer, Envelope, Reply } from "./envelope.js";
+import type { Answer, Envelope, Question, Reply } from "./envelope.js";
 
 /**
  * Saved state that lets a paused task continue in a fresh sandbox (FR-E6).
@@ -29,17 +29,38 @@ export interface Workspace {
   path: string;
 }
 
+/** A process running inside the task's sandbox. */
+export interface HarnessProcess {
+  /** stdout, split into lines. */
+  lines: AsyncIterable<string>;
+  exited: Promise<{ code: number; stderr: string }>;
+  kill(): void;
+}
+
+/**
+ * Starts a process inside the sandbox, in the workspace directory. The sandbox
+ * provides credentials and egress policy; adapters never see host secrets directly.
+ */
+export type LaunchProcess = (argv: string[]) => HarnessProcess;
+
 export interface StartInput {
   runId: string;
   envelope: Envelope;
   workspace: Workspace;
+  launch: LaunchProcess;
   model: string;
   /** Resolved canonical instructions for the role; adapters apply their own shim (FR-X4). */
   instructions: string;
+  /** Tool ids from the agent definition. Adapters map them to harness tools and deny the rest. */
+  tools: readonly string[];
+  /** What is left of the task budget. Adapters enforce it mid-run where the harness allows. */
+  remaining: { usd: number };
 }
 
 export interface ResumeInput extends StartInput {
   checkpoint: Checkpoint;
+  /** The question that paused the task, when resuming from needs_decision. */
+  question?: Question;
   /** Present when resuming from needs_decision; absent when resuming from a manual pause. */
   answer?: Answer;
 }

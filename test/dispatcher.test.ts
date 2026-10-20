@@ -1,3 +1,7 @@
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it } from "vitest";
 import type { LoadedConfig } from "../src/config/load.js";
 import type { ResumeInput } from "../src/contracts/adapter.js";
@@ -8,6 +12,8 @@ import { Ledger } from "../src/ledger/ledger.js";
 import { CheckpointStore } from "../src/queue/checkpoints.js";
 import { Settings } from "../src/queue/settings.js";
 import { TaskStore } from "../src/queue/store.js";
+import { ClaudeCodeAdapter } from "../src/harness/claude-code.js";
+import { FileTranscriptStore } from "../src/harness/transcripts.js";
 import { LocalSandboxProvider } from "../src/sandbox/local.js";
 import { FakeCodeHost, makeOrigin, originBranches, ScriptedAdapter, type Step } from "./fakes.js";
 import { newTask, testDb } from "./helpers.js";
@@ -52,7 +58,7 @@ describe("Dispatcher", () => {
     host = new FakeCodeHost();
   });
 
-  const dispatcher = (adapter: ScriptedAdapter, leaseMs = 60_000) =>
+  const dispatcher = (adapter: ScriptedAdapter | ClaudeCodeAdapter, leaseMs = 60_000) =>
     new Dispatcher({
       db,
       config: config(),
@@ -79,6 +85,27 @@ describe("Dispatcher", () => {
     expect((await new Ledger(db).taskSpend(task.id)).usd).toBeCloseTo(0.1);
     const done = (await store.events(task.id)).at(-1);
     expect(done?.payload).toMatchObject({ pr: { number: 1 } });
+  });
+
+  it("runs the Claude Code adapter end to end", async () => {
+    process.env.FAKE_CLAUDE_SCENARIO = "done";
+    const task = await store.create(newTask({ budget }), "cli:test");
+    const adapter = new ClaudeCodeAdapter({
+      transcripts: new FileTranscriptStore(await mkdtemp(join(tmpdir(), "shira-transcripts-"))),
+      binary: fileURLToPath(new URL("./fixtures/fake-claude.mjs", import.meta.url)),
+    });
+    try {
+      expect(await dispatcher(adapter).tick()).toMatchObject({ status: "done" });
+    } finally {
+      delete process.env.FAKE_CLAUDE_SCENARIO;
+    }
+    expect(host.prs[0]?.body).toContain("Fixed app.txt.");
+    const runs = await db.query<{ harness: string; usd: string; transcript_uri: string }>(
+      "SELECT harness, usd, transcript_uri FROM runs WHERE task_id = $1",
+      [task.id],
+    );
+    expect(runs.rows[0]).toMatchObject({ harness: "claude-code", usd: "0.420000" });
+    expect(runs.rows[0]!.transcript_uri).toMatch(/^file:/);
   });
 
   it("checkpoints on needs_decision and resumes with the answer", async () => {
