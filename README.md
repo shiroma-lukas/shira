@@ -59,3 +59,9 @@ given, so use a throwaway database:
 docker compose exec postgres psql -U shira -c "CREATE DATABASE shira_test"
 SHIRA_TEST_DATABASE_URL=postgres://shira:shira@localhost:54329/shira_test pnpm test
 ```
+
+## License
+
+Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE). "Shira" is a trademark; the license
+does not cover use of the name or logo. Contributions require a DCO sign-off; see
+[CONTRIBUTING.md](CONTRIBUTING.md).
