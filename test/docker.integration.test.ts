@@ -2,7 +2,7 @@
 // (runsc) by default; set SHIRA_TEST_DOCKER_RUNTIME=runc on hosts without gVisor (macOS)
 // to exercise everything except the kernel isolation itself.
 import { randomBytes } from "node:crypto";
-import { mkdtemp } from "node:fs/promises";
+import { chmod, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -60,6 +60,10 @@ describe.skipIf(!enabled)(`Docker sandbox (${runtime})`, () => {
     const bundleDir = await mkdtemp(join(tmpdir(), "shira-bundle-"));
     const bundled = await run(["git", "-C", origin, "bundle", "create", join(bundleDir, "origin.bundle"), "--all"]);
     if (bundled.code !== 0) throw new Error(bundled.stderr);
+    // The container's root has every capability dropped, including the one that bypasses
+    // file permissions, so the bundle must be world-readable.
+    await chmod(bundleDir, 0o755);
+    await chmod(join(bundleDir, "origin.bundle"), 0o644);
     provider = new DockerSandboxProvider({
       runtime: runtime === "runsc" ? "runsc" : { unsafe: runtime },
       network,
