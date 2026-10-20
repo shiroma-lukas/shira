@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { isIP } from "node:net";
 import type { EgressGrants } from "../egress/proxy.js";
 import { launch, run } from "./process.js";
 import type { ExecResult, RepoAccess, RepoCredentials, Sandbox, SandboxProvider, SandboxSpec } from "./sandbox.js";
@@ -13,7 +14,11 @@ export interface DockerSandboxOptions {
   runtime: "runsc" | { unsafe: string };
   /** A Docker network with no route to the internet (`docker network create --internal`). */
   network: string;
-  /** The egress proxy as seen from inside the network, e.g. `http://shira-egress:3128`. */
+  /**
+   * The egress proxy, e.g. `http://shira-egress:3128`. A hostname must be the proxy
+   * container's name: Docker's embedded DNS doesn't work under gVisor, so the provider
+   * looks up the container's address and writes it to the sandbox's /etc/hosts.
+   */
   proxyUrl: string;
   egress: EgressGrants;
   credentials?: RepoCredentials;
@@ -63,6 +68,7 @@ export class DockerSandboxProvider implements SandboxProvider {
     const proxyEnv = { HTTPS_PROXY: proxy.href, https_proxy: proxy.href, HTTP_PROXY: proxy.href, http_proxy: proxy.href };
     const { limits } = spec.repo;
 
+    const proxyHost = await this.proxyHostArgs(proxy.hostname);
     await this.opts.egress.grant(name, secret, [...DEFAULT_EGRESS, ...spec.repo.egress.allow]);
     try {
       await this.must(
@@ -90,6 +96,7 @@ export class DockerSandboxProvider implements SandboxProvider {
           ...Object.keys(proxyEnv).flatMap((k) => ["--env", k]),
           "--env",
           "NO_PROXY=",
+          ...proxyHost,
           ...(this.opts.extraRunArgs ?? []),
           "--entrypoint",
           "sleep",
@@ -158,6 +165,19 @@ export class DockerSandboxProvider implements SandboxProvider {
       },
       destroy: () => this.destroy(name),
     };
+  }
+
+  /** `--add-host` for the proxy container, looked up on the sandbox network. */
+  private async proxyHostArgs(host: string): Promise<string[]> {
+    if (isIP(host)) return [];
+    const ip = await this.must([
+      "inspect",
+      "--format",
+      `{{with index .NetworkSettings.Networks "${this.opts.network}"}}{{.IPAddress}}{{end}}`,
+      host,
+    ]);
+    if (!isIP(ip)) throw new Error(`egress proxy container ${host} is not on network ${this.opts.network}`);
+    return ["--add-host", `${host}:${ip}`];
   }
 
   private async authEnv(repo: string, access: RepoAccess | undefined): Promise<Record<string, string>> {

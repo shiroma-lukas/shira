@@ -44,7 +44,7 @@ describe.skipIf(!enabled)(`Docker sandbox (${runtime})`, () => {
       "--volume", `${fileURLToPath(new URL("../dist", import.meta.url))}:/app:ro`,
       IMAGE, "node", "/app/egress-proxy.mjs",
     );
-    await docker("network", "connect", "--alias", "shira-egress", network, proxyName);
+    await docker("network", "connect", network, proxyName);
     const adminPort = (await docker("port", proxyName, "8080/tcp")).split(":").at(-1);
     const admin = new EgressAdminClient(`http://127.0.0.1:${adminPort}`, token);
     for (let i = 0; i < 50; i++) {
@@ -67,7 +67,7 @@ describe.skipIf(!enabled)(`Docker sandbox (${runtime})`, () => {
     provider = new DockerSandboxProvider({
       runtime: runtime === "runsc" ? "runsc" : { unsafe: runtime },
       network,
-      proxyUrl: "http://shira-egress:3128",
+      proxyUrl: `http://${proxyName}:3128`,
       egress: admin,
       // Clone from a bundle: on Linux a bind-mounted repo belongs to the CI user, not the
       // container's root, and git refuses to read repos owned by someone else.
