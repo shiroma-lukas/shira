@@ -1,9 +1,9 @@
 import { createSign } from "node:crypto";
-import type { CodeHost, Issue, IssueTracker } from "../dispatcher/pr.js";
+import type { CodeHost, Issue, IssueTracker, PullRequestInfo, PullRequests, Review, ReviewComment } from "../dispatcher/pr.js";
 import type { RepoAccess, RepoCredentials } from "../sandbox/sandbox.js";
 
 /** Installation token permissions per access level. Nothing beyond what the platform needs. */
-type TokenPurpose = RepoAccess | "pull_request" | "issues";
+type TokenPurpose = RepoAccess | "pull_request" | "reviews" | "issues";
 
 const PERMISSIONS: Record<TokenPurpose, Record<string, "read" | "write">> = {
   read: { contents: "read" },
@@ -12,6 +12,7 @@ const PERMISSIONS: Record<TokenPurpose, Record<string, "read" | "write">> = {
   // otherwise). contents: read still can't push or merge.
   pull_request: { pull_requests: "write", contents: "read" },
   issues: { issues: "write" },
+  reviews: { pull_requests: "read" },
 };
 
 /** Refresh tokens this long before GitHub expires them (they live one hour). */
@@ -51,7 +52,7 @@ const b64url = (data: string | Buffer) => Buffer.from(data).toString("base64url"
  * token scoped to one repository and the minimum permissions for the job, so a task
  * can never touch another repo, and only the platform ever holds write access.
  */
-export class GitHubApp implements CodeHost, IssueTracker, RepoCredentials {
+export class GitHubApp implements CodeHost, IssueTracker, RepoCredentials, PullRequests {
   private readonly api: string;
   private readonly git: string;
   private readonly fetch: typeof fetch;
@@ -200,6 +201,41 @@ export class GitHubApp implements CodeHost, IssueTracker, RepoCredentials {
       url: i.html_url,
       ...(i.user ? { author: `@${i.user.login} (${i.author_association ?? "unknown"})` } : {}),
     };
+  }
+
+  async getPullRequest(repo: string, number: number): Promise<PullRequestInfo> {
+    const token = await this.token(repo, "reviews");
+    const p = await this.request<{ number: number; state: "open" | "closed"; html_url: string; head: { ref: string; sha: string } }>(
+      "GET",
+      `/repos/${repo}/pulls/${number}`,
+      `token ${token}`,
+    );
+    return { number: p.number, state: p.state, url: p.html_url, head: { ref: p.head.ref, sha: p.head.sha } };
+  }
+
+  async listReviews(repo: string, number: number): Promise<Review[]> {
+    const token = await this.token(repo, "reviews");
+    const reviews = await this.request<
+      { id: number; user: { login: string } | null; author_association: string; state: Review["state"]; body: string | null; html_url: string }[]
+    >("GET", `/repos/${repo}/pulls/${number}/reviews?per_page=100`, `token ${token}`);
+    return reviews.map((r) => ({
+      id: r.id,
+      author: r.user?.login ?? "ghost",
+      association: r.author_association,
+      state: r.state,
+      body: r.body ?? "",
+      url: r.html_url,
+    }));
+  }
+
+  async reviewComments(repo: string, number: number, reviewId: number): Promise<ReviewComment[]> {
+    const token = await this.token(repo, "reviews");
+    const comments = await this.request<{ path: string; line: number | null; body: string; diff_hunk: string }[]>(
+      "GET",
+      `/repos/${repo}/pulls/${number}/reviews/${reviewId}/comments?per_page=100`,
+      `token ${token}`,
+    );
+    return comments.map((c) => ({ path: c.path, line: c.line, body: c.body, diffHunk: c.diff_hunk }));
   }
 
   async comment(repo: string, number: number, body: string): Promise<void> {

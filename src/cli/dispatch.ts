@@ -7,6 +7,7 @@ import { Dispatcher } from "../dispatcher/dispatcher.js";
 import { GitHubApp } from "../github/app.js";
 import { loadPeople, syncIdentities } from "../people/people.js";
 import { ClaudeCodeAdapter } from "../harness/claude-code.js";
+import { ReviewWatcher } from "../dispatcher/reviews.js";
 import { transcriptStoreFromEnv } from "../harness/transcripts.js";
 import { EgressAdminClient } from "../egress/proxy.js";
 import { DockerSandboxProvider } from "../sandbox/docker.js";
@@ -72,6 +73,8 @@ export async function runDispatcher(
   await syncIdentities(db, people.people);
   const apiKey = required("ANTHROPIC_API_KEY"); // Claude Code runs with --bare, which ignores interactive logins.
 
+  const owner = `dispatcher-${hostname()}-${process.pid}`;
+  const log = (m: string, f?: Record<string, unknown>) => console.log(new Date().toISOString(), m, f ? JSON.stringify(f) : "");
   const dispatcher = new Dispatcher({
     db,
     config,
@@ -82,9 +85,12 @@ export async function runDispatcher(
     codeHost: github,
     credentials: github,
     issues: github,
+    prs: github,
+    // Review feedback on Shira's PRs becomes follow-up tasks (FR-H5), polled every minute.
+    reviews: new ReviewWatcher({ db, config, prs: github, people: people.people, owner, log }),
     instructions: contextLoader(contextDir),
-    owner: `dispatcher-${hostname()}-${process.pid}`,
-    log: (m, f) => console.log(new Date().toISOString(), m, f ? JSON.stringify(f) : ""),
+    owner,
+    log,
   });
   console.log(
     mode.kind === "local-unsafe"
