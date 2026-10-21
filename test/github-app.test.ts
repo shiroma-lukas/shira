@@ -87,6 +87,25 @@ describe("GitHubApp", () => {
     expect(await app.revokeTokens()).toBe(1);
   });
 
+  it("reads PRs and reviews with a read-only pull requests token", async () => {
+    const gh = fakeGitHub({
+      ...tokenRoutes(() => new Date(Date.now() + 3600_000).toISOString()),
+      "GET /repos/acme/web/pulls/4": () => ({ body: { number: 4, state: "open", html_url: "u4", head: { ref: "shira/abc", sha: "a".repeat(40) } } }),
+      "GET /repos/acme/web/pulls/4/reviews": () => ({
+        body: [{ id: 9, user: { login: "ana" }, author_association: "MEMBER", state: "CHANGES_REQUESTED", body: null, html_url: "r9" }],
+      }),
+      "GET /repos/acme/web/pulls/4/reviews/9/comments": () => ({ body: [{ path: "a.ts", line: 3, body: "rename", diff_hunk: "@@" }] }),
+    });
+    const app = new GitHubApp({ appId: "123", privateKey, fetch: gh.fetchImpl });
+    expect(await app.getPullRequest("acme/web", 4)).toEqual({ number: 4, state: "open", url: "u4", head: { ref: "shira/abc", sha: "a".repeat(40) } });
+    expect(await app.listReviews("acme/web", 4)).toEqual([
+      { id: 9, author: "ana", association: "MEMBER", state: "CHANGES_REQUESTED", body: "", url: "r9" },
+    ]);
+    expect(await app.reviewComments("acme/web", 4, 9)).toEqual([{ path: "a.ts", line: 3, body: "rename", diffHunk: "@@" }]);
+    const issued = gh.calls.filter((c) => c.url.endsWith("/access_tokens"));
+    expect(issued.map((c) => c.body)).toEqual([{ repositories: ["web"], permissions: { metadata: "read", pull_requests: "read" } }]);
+  });
+
   it("refreshes a token close to expiry", async () => {
     let now = Date.parse("2026-10-19T12:00:00Z");
     const gh = fakeGitHub(tokenRoutes(() => new Date(now + 3600_000).toISOString()));
