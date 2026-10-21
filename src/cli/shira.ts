@@ -4,6 +4,8 @@ import { parseArgs } from "node:util";
 import pg from "pg";
 import { loadConfig } from "../config/load.js";
 import { TaskStatus } from "../contracts/index.js";
+import { Risk } from "../contracts/people.js";
+import { loadPeople } from "../people/people.js";
 import { ensureAppUser, excessPrivileges } from "../db/app-role.js";
 import { fromPool, type Db } from "../db/client.js";
 import { migrate } from "../db/migrate.js";
@@ -33,6 +35,8 @@ const USAGE = `usage: shira <command> [options]
   kill on|off|status                        kill switch: stop and pause running tasks, claim nothing,
                                             revoke GitHub tokens; off lists the tasks it paused
   budget monthly <usd>|none                 set the monthly org spend ceiling
+  approvers --repo <org/name> --risk <low|medium|high> --usd <n>
+                                            who may approve such a proposal (context repo approvals.yaml)
   dispatch                                  run tasks in gVisor sandboxes (needs the egress proxy:
                                             docker compose --profile sandbox up)
            [--concurrency <n>]              tasks to run at once (default 1)
@@ -186,6 +190,21 @@ async function main(db: Db, argv: string[]): Promise<void> {
         console.log(`\npaused by the kill switch (requeue each with \`shira resume <task-id>\`):`);
         for (const t of paused) console.log(`  ${line(t)}`);
       }
+      return;
+    }
+    case "approvers": {
+      const { values } = parseArgs({
+        args: rest,
+        options: { repo: { type: "string" }, risk: { type: "string" }, usd: { type: "string" } },
+      });
+      const risk = Risk.safeParse(values.risk);
+      const usd = Number(values.usd);
+      if (!values.repo || !risk.success || !(usd >= 0)) fail("approvers needs --repo, --risk low|medium|high, and --usd");
+      const loaded = await loadPeople(process.env.SHIRA_CONTEXT_DIR ?? "context-template");
+      if (!loaded.ok) fail(loaded.errors.map((e) => `${e.file}: ${e.message}`).join("\n"));
+      const who = loaded.people.approversFor({ repo: values.repo, risk: risk.data, estimatedUsd: usd });
+      if (!who.length) console.log("nobody: no approval rule covers this");
+      for (const i of who) console.log(`${i.id.padEnd(20)} ${i.name}${i.github ? `  @${i.github}` : ""}`);
       return;
     }
     case "budget": {

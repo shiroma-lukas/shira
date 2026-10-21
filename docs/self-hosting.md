@@ -110,7 +110,7 @@ environment wins. Docker Compose reads the same file.
 | `DATABASE_URL` | `postgres://shira:shira@localhost:54329/shira` | Postgres, as the app user (`shira app-user`) |
 | `SHIRA_ADMIN_DATABASE_URL` | `DATABASE_URL` | Admin connection for `migrate` and `app-user` only |
 | `SHIRA_CONFIG` | `./config` | Agent and repo definitions |
-| `SHIRA_CONTEXT_DIR` | `./context-template` | Context repo checkout (role instructions) |
+| `SHIRA_CONTEXT_DIR` | `./context-template` | Context repo checkout: role instructions, people, and approval rules |
 | `SHIRA_TRANSCRIPTS_DIR` | `./.shira/transcripts` | Redacted run transcripts on local disk |
 | `SHIRA_TRANSCRIPTS_URI` | (unset) | `s3://bucket[/prefix]` stores transcripts in S3 instead (AWS credentials and region from the environment) |
 | `SHIRA_SANDBOX_RUNTIME` | `runsc` | Container runtime; anything else needs `--unsafe-runtime` |
@@ -140,6 +140,22 @@ Run it, like `migrate`, with the admin connection (`SHIRA_ADMIN_DATABASE_URL`, o
 `shira dispatch` warns at startup when it is connected as a superuser, the schema owner, or
 a user outside `shira_app`. The compose defaults use the `shira` superuser for convenience
 during development.
+
+## People and approvals
+
+The context repo's `identities.yaml`, `approvals.yaml`, and `ownership.yaml` say who is
+who, who may approve which proposals, and who owns what (PRD FR-H2, FR-H6). The approval
+rules are enforced in code: an approval counts only if a rule names the approver (or one
+of their roles) and covers the proposal's repo, risk, and estimated cost. Approvals from
+anyone else are recorded and ignored.
+
+- `pnpm validate-config` checks the files, including that every identity they name exists.
+- `shira dispatch` refuses to start if they're invalid, and mirrors identities into the
+  database so decision records can name their approver.
+- `shira approvers --repo org/name --risk medium --usd 20` lists who may approve such a
+  proposal.
+
+Approvals arrive with chat intake and the concierge (M2). Until then nothing asks for one.
 
 ## Repo instructions and transcripts
 

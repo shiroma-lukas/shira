@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "owners": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "identity": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
+          },
+          "repos": {
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "paths": {
+            "default": [
+              "**"
+            ],
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "contact": {
+            "type": "object",
+            "properties": {
+              "channel": {
+                "type": "string",
+                "enum": [
+                  "slack",
+                  "github"
+                ]
+              },
+              "urgent": {
+                "default": "dm",
+                "type": "string",
+                "enum": [
+                  "dm",
+                  "channel",
+                  "none"
+                ]
+              },
+              "digest": {
+                "default": "daily",
+                "type": "string",
+                "enum": [
+                  "daily",
+                  "weekly",
+                  "none"
+                ]
+              }
+            },
+            "required": [
+              "channel"
+            ]
+          }
+        },
+        "required": [
+          "identity",
+          "repos",
+          "contact"
+        ]
+      }
+    }
+  },
+  "required": [
+    "owners"
+  ]
+}
