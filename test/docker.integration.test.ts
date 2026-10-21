@@ -73,7 +73,6 @@ describe.skipIf(!enabled)(`Docker sandbox (${runtime})`, () => {
       // container's root, and git refuses to read repos owned by someone else.
       cloneUrl: () => "/origin/origin.bundle",
       extraRunArgs: ["--volume", `${bundleDir}:/origin:ro`],
-      harnessEnv: { SHIRA_TEST_SECRET: "visible-to-harness-only" },
     });
     const repo = RepoConfig.parse({
       apiVersion: "shira/v1",
@@ -83,7 +82,12 @@ describe.skipIf(!enabled)(`Docker sandbox (${runtime})`, () => {
       test: "true",
       egress: { allow: ["registry.npmjs.org"] },
     });
-    sandbox = await provider.create({ taskId: "abcdef12-0000-4000-8000-000000000000", repo, branch: "shira/abcdef12" });
+    sandbox = await provider.create({
+      taskId: "abcdef12-0000-4000-8000-000000000000",
+      repo,
+      branch: "shira/abcdef12",
+      harness: { env: { SHIRA_TEST_SECRET: "visible-to-harness-only" }, egress: [] },
+    });
   }, 600_000);
 
   afterAll(async () => {

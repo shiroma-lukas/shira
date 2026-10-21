@@ -60,7 +60,7 @@ export class LocalSandboxProvider implements SandboxProvider {
       id: `local-${randomUUID()}`,
       workspace: { repo: spec.repo.repo, branch: spec.branch, path },
       exec: async (command, o) => sh(command, path, o?.timeoutMs, await authEnv(o?.auth)),
-      launch: (argv) => launch(argv, { cwd: path }),
+      launch: (argv) => launch(argv, { cwd: path, env: spec.harness?.env }),
       async writeFile(name, content) {
         if (!ATTACHMENT_NAME.test(name)) throw new Error(`invalid attachment name ${name}`);
         await mkdir(join(root, "refs"), { recursive: true });

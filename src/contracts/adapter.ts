@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { RepoName, RunId, TaskId, Usage, type Ref } from "./common.js";
+import type { Provider } from "./agent.js";
 import type { Answer, Envelope, Question, Reply } from "./envelope.js";
 
 /**
@@ -49,11 +50,16 @@ export interface StartInput {
   workspace: Workspace;
   launch: LaunchProcess;
   model: string;
+  /** Who serves `model`. The sandbox already carries the provider's credential and egress. */
+  provider: Provider;
   /** Resolved canonical instructions for the role; adapters apply their own shim (FR-X4). */
   instructions: string;
   /** Tool ids from the agent definition. Adapters map them to harness tools and deny the rest. */
   tools: readonly string[];
-  /** What is left of the task budget. Adapters enforce it mid-run where the harness allows. */
+  /**
+   * What is left of the task budget. Adapters enforce it mid-run where the harness can
+   * price the model; otherwise the dispatcher checks it between runs.
+   */
   remaining: { usd: number };
   /**
    * Local copies of refs the agent can't fetch itself (e.g. a private GitHub issue),
@@ -110,6 +116,12 @@ export interface HarnessAdapter {
     nativeResume: boolean;
   };
 
+  /**
+   * Why this adapter can't run the model right now, or null. Checked before each run; a
+   * reason retries the task. E.g. no price for the model, so the dollar budget couldn't
+   * be enforced.
+   */
+  unavailable?(provider: Provider, model: string): string | null;
   start(input: StartInput): Promise<SessionHandle>;
   /** Mid-run message to the agent, e.g. a budget warning. */
   send(session: SessionHandle, text: string): Promise<void>;

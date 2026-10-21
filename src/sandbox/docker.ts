@@ -12,8 +12,11 @@ import {
   type SandboxSpec,
 } from "./sandbox.js";
 
-/** Hosts every sandbox may reach: the model API and the code host. Repos add their own (FR-E4). */
-export const DEFAULT_EGRESS = ["api.anthropic.com", "github.com", "*.githubusercontent.com"];
+/**
+ * Hosts every sandbox may reach: the code host. The agent's model provider and the
+ * repo add their own (FR-E4).
+ */
+export const DEFAULT_EGRESS = ["github.com", "*.githubusercontent.com"];
 
 const WORKDIR = "/workspace/repo";
 const REFS_DIR = "/workspace/refs";
@@ -33,8 +36,6 @@ export interface DockerSandboxOptions {
   proxyUrl: string;
   egress: EgressGrants;
   credentials?: RepoCredentials;
-  /** Variables the harness needs (e.g. ANTHROPIC_API_KEY), passed to launched processes only. */
-  harnessEnv?: Record<string, string>;
   /** Overrides where to clone from (tests). */
   cloneUrl?: (repo: string) => string;
   /** Extra `docker run` arguments (tests: bind-mounting a local origin). */
@@ -80,7 +81,7 @@ export class DockerSandboxProvider implements SandboxProvider {
     const { limits } = spec.repo;
 
     const proxyHost = await this.proxyHostArgs(proxy.hostname);
-    await this.opts.egress.grant(name, secret, [...DEFAULT_EGRESS, ...spec.repo.egress.allow]);
+    await this.opts.egress.grant(name, secret, [...DEFAULT_EGRESS, ...(spec.harness?.egress ?? []), ...spec.repo.egress.allow]);
     try {
       await this.must(
         [
@@ -150,7 +151,7 @@ export class DockerSandboxProvider implements SandboxProvider {
         // own session, so killing its process group also stops everything it started.
         // `env kill` runs the kill binary (procps); dash's builtin can't signal a process group.
         const pidfile = `/tmp/shira-launch-${++launches}.pid`;
-        const env = this.opts.harnessEnv ?? {};
+        const env = spec.harness?.env ?? {};
         return launch(
           [
             this.docker,

@@ -38,6 +38,7 @@ describe("ClaudeCodeAdapter", () => {
       workspace: sandbox.workspace,
       launch: sandbox.launch,
       model: "claude-sonnet-5-5",
+      provider: "anthropic",
       instructions: "You are a worker.",
       tools: ["read", "edit", "shell"],
       remaining: { usd: 2.5 },
@@ -201,6 +202,74 @@ describe("ClaudeCodeAdapter", () => {
     expect(outcome.kind).toBe("reply");
     expect(outcome.usage.usd).toBe(0.42);
     expect(outcome.transcriptUri).toBe("unavailable: AccessDenied");
+  });
+
+  describe("through OpenRouter", () => {
+    const glm = () => ({ ...input, model: "z-ai/glm-5.3-flash", provider: "openrouter" as const });
+
+    it("leaves out --max-budget-usd, which Claude Code can't price for other models", async () => {
+      await run("unknown_model", glm());
+      const args = await lastArgs();
+      expect(args).not.toContain("--max-budget-usd");
+      expect(args[args.indexOf("--model") + 1]).toBe("z-ai/glm-5.3-flash");
+    });
+
+    it("prices the run from the price table and per-model token totals, ignoring Claude Code's guess", async () => {
+      const priced = new ClaudeCodeAdapter({
+        transcripts: new FileTranscriptStore(await mkdtemp(join(tmpdir(), "shira-cc-"))),
+        binary,
+        prices: (provider, model) =>
+          provider === "openrouter" && model === "z-ai/glm-5.3-flash" ? { input: 1e-7, output: 2e-7, cacheRead: 1e-8 } : null,
+      });
+      process.env.FAKE_CLAUDE_SCENARIO = "unknown_model";
+      const outcome = await priced.result(await priced.start(glm()));
+      expect(outcome.kind).toBe("reply");
+      expect(outcome.usage).toMatchObject({ inputTokens: 1_000_000, outputTokens: 200_000, cacheReadTokens: 500_000, cacheWriteTokens: 0 });
+      expect(outcome.usage.usd).toBeCloseTo(0.1 + 0.04 + 0.005);
+    });
+
+    it("records the cost as unknown when the model has no price", async () => {
+      const outcome = await run("unknown_model", glm());
+      expect(outcome.usage.usd).toBeNull();
+      expect(outcome.usage.inputTokens).toBe(1_000_000);
+    });
+
+    it("reports a model it can't price as unavailable, so no run starts without a dollar cap", async () => {
+      expect(adapter.unavailable("openrouter", "z-ai/glm-5.3-flash")).toMatch(/no price for z-ai\/glm-5.3-flash on openrouter/);
+      expect(adapter.unavailable("anthropic", "claude-sonnet-5-5")).toBeNull();
+      const priced = new ClaudeCodeAdapter({ transcripts: new FileTranscriptStore(tmpdir()), binary, prices: () => ({ input: 1, output: 1 }) });
+      expect(priced.unavailable("openrouter", "z-ai/glm-5.3-flash")).toBeNull();
+    });
+
+    it("stops the run mid-way at the remaining budget, from streamed usage", async () => {
+      const priced = new ClaudeCodeAdapter({
+        transcripts: new FileTranscriptStore(await mkdtemp(join(tmpdir(), "shira-cc-"))),
+        binary,
+        prices: () => ({ input: 1e-7, output: 1e-6 }),
+      });
+      process.env.FAKE_CLAUDE_SCENARIO = "overspend";
+      const outcome = await priced.result(await priced.start({ ...glm(), remaining: { usd: 0.25 } }));
+      expect(outcome).toMatchObject({ kind: "aborted", reason: "budget_exceeded" });
+      // msg_1's two events count once; output is estimated from content, not the streamed 1.
+      expect(outcome.usage.inputTokens).toBe(3_000_000);
+      const output = outcome.usage.outputTokens;
+      expect(output).toBeGreaterThanOrEqual(200);
+      expect(outcome.usage.usd).toBeCloseTo(0.3 + output * 1e-6);
+    });
+
+    it("records the cost as unknown when it crashed before streaming any usage", async () => {
+      const priced = new ClaudeCodeAdapter({ transcripts: new FileTranscriptStore(tmpdir()), binary, prices: () => ({ input: 1, output: 1 }) });
+      process.env.FAKE_CLAUDE_SCENARIO = "crash";
+      expect((await priced.result(await priced.start(glm()))).usage.usd).toBeNull();
+    });
+
+    it("fails at once when OpenRouter is out of credits", async () => {
+      expect(await run("no_credits", glm())).toMatchObject({ kind: "aborted", reason: "config_error" });
+    });
+  });
+
+  it("records the cost as unknown when the run ends without a result", async () => {
+    expect((await run("crash")).usage.usd).toBeNull();
   });
 
   it("stores a redacted transcript", async () => {

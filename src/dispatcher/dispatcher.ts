@@ -7,17 +7,18 @@ import {
   Question,
   Reply,
   type AgentDefinition,
+  type ModelChoice,
   type Ref,
   type RepoConfig,
   type TaskStatus,
 } from "../contracts/index.js";
 import type { LoadedConfig } from "../config/load.js";
 import type { Db } from "../db/client.js";
-import { exceededBudget, Ledger } from "../ledger/ledger.js";
+import { exceededBudget, formatUsd, Ledger } from "../ledger/ledger.js";
 import { CheckpointStore } from "../queue/checkpoints.js";
 import { Settings } from "../queue/settings.js";
 import { TaskStore, type Task } from "../queue/store.js";
-import type { Sandbox, SandboxProvider } from "../sandbox/sandbox.js";
+import type { HarnessAccess, Sandbox, SandboxProvider } from "../sandbox/sandbox.js";
 import { scanDiff } from "../security/secrets.js";
 import { foreignClosingRefs, neutralizeForGitHub, outOfScope, wrapUntrusted } from "../security/untrusted.js";
 import { GitHubError } from "../github/app.js";
@@ -29,6 +30,12 @@ export interface DispatcherDeps {
   /** Keyed by adapter id, matched against `model.primary.harness` in agent definitions. */
   adapters: ReadonlyMap<string, HarnessAdapter>;
   sandboxes: SandboxProvider;
+  /**
+   * The model provider's credential and egress for an agent's model choice. Throws when
+   * it can't be provided (e.g. a missing key), which fails the task without retrying.
+   * Without it, sandboxes get no provider access (tests).
+   */
+  harnessAccess?: (choice: ModelChoice) => HarnessAccess;
   codeHost: CodeHost;
   /** Revokes the code host credentials this process holds when the kill switch goes on (FR-S4). */
   credentials?: { revokeTokens(): Promise<number> };
@@ -47,7 +54,8 @@ export interface DispatcherDeps {
 export type TickResult =
   | { kind: "idle" }
   | { kind: "killed" }
-  | { kind: "budget_exhausted"; monthSpendUsd: number }
+  /** `unpricedRuns` were counted at their task's dollar budget (see `Ledger.monthSpend`). */
+  | { kind: "budget_exhausted"; monthSpendUsd: number; unpricedRuns: number }
   | { kind: "ran"; taskId: string; status: TaskStatus };
 
 const ZERO_USAGE = (model: string) => ({
@@ -56,7 +64,7 @@ const ZERO_USAGE = (model: string) => ({
   outputTokens: 0,
   cacheReadTokens: 0,
   cacheWriteTokens: 0,
-  usd: 0,
+  usd: null,
   durationMs: 0,
 });
 
@@ -117,6 +125,7 @@ export class Dispatcher {
   private readonly settings: Settings;
   /** Set once this process has revoked its credentials for the current kill; cleared when it's lifted. */
   private revokedForKill = false;
+  private loggedExhaustion: string | null = null;
   private readonly log: NonNullable<DispatcherDeps["log"]>;
 
   constructor(private readonly deps: DispatcherDeps) {
@@ -151,8 +160,20 @@ export class Dispatcher {
 
     const monthly = await this.settings.monthlyBudgetUsd();
     if (monthly !== null) {
-      const spent = await this.ledger.monthSpendUsd();
-      if (spent >= monthly) return { kind: "budget_exhausted", monthSpendUsd: spent };
+      const spent = await this.ledger.monthSpend();
+      if (spent.usd >= monthly) {
+        // Said once per state, not on every idle tick.
+        const state = `${spent.usd}/${spent.unpricedRuns}`;
+        if (spent.unpricedRuns && this.loggedExhaustion !== state) {
+          this.log("monthly budget reached counting runs with unknown cost at their task budget", {
+            monthSpendUsd: spent.usd,
+            unpricedRuns: spent.unpricedRuns,
+            monthlyBudgetUsd: monthly,
+          });
+        }
+        this.loggedExhaustion = state;
+        return { kind: "budget_exhausted", monthSpendUsd: spent.usd, unpricedRuns: spent.unpricedRuns };
+      }
     }
 
     const task = await this.store.claim(this.deps.owner, this.leaseMs);
@@ -227,9 +248,18 @@ export class Dispatcher {
     const answer = await this.pendingAnswer(task.id);
     const branch = checkpoint?.branch ?? `shira/${task.id.slice(0, 8)}`;
 
+    let harness: HarnessAccess | undefined;
+    try {
+      harness = this.deps.harnessAccess?.(agent.model.primary);
+    } catch (err) {
+      return (await this.failPermanently(task, `model provider: ${(err as Error).message}`)).status;
+    }
+    const unavailable = adapter.unavailable?.(agent.model.primary.provider, agent.model.primary.model);
+    if (unavailable) return (await this.retry(task, unavailable)).status;
+
     let sandbox: Sandbox;
     try {
-      sandbox = await this.deps.sandboxes.create({ taskId: task.id, repo, branch, checkpointSha: checkpoint?.head_sha });
+      sandbox = await this.deps.sandboxes.create({ taskId: task.id, repo, branch, checkpointSha: checkpoint?.head_sha, harness });
     } catch (err) {
       const message = `sandbox: ${(err as Error).message}`;
       if (PERMANENT_SANDBOX_ERROR.test(message)) return (await this.failPermanently(task, message)).status;
@@ -254,7 +284,7 @@ export class Dispatcher {
       // Setup can take minutes; don't start the agent if the kill switch went on meanwhile.
       if (await this.settings.agentsPaused()) return (await this.pauseForKill(task, "before the run")).status;
 
-      const model = agent.model.primary.model;
+      const { model, provider } = agent.model.primary;
       const run = await this.ledger.startRun({ taskId: task.id, role: task.role, harness: adapter.id, model });
       const input = {
         runId: run.id,
@@ -262,6 +292,7 @@ export class Dispatcher {
         workspace: sandbox.workspace,
         launch: sandbox.launch,
         model,
+        provider,
         instructions: await this.deps.instructions(agent.instructions),
         tools: agent.tools,
         remaining: { usd: task.budget.usd - spend.usd },
@@ -584,7 +615,7 @@ export class Dispatcher {
     if (!ref || !this.deps.issues || !["done", "failed", "needs_decision"].includes(status)) return;
     const last = (await this.store.events(task.id)).findLast((e) => e.kind === "state_change");
     const spend = await this.ledger.taskSpend(task.id);
-    const cost = `$${spend.usd.toFixed(2)}, ${spend.tokens.toLocaleString("en-US")} tokens`;
+    const cost = `${formatUsd(spend)}, ${spend.tokens.toLocaleString("en-US")} tokens`;
     const short = `task \`${task.id.slice(0, 8)}\``;
     let body: string;
     if (status === "done") {
