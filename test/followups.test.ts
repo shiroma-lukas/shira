@@ -71,7 +71,7 @@ describe("follow-ups from the first end-to-end run", () => {
   describe("issue <-> PR linking", () => {
     it("turns an issue into a task and gives the agent its full text", async () => {
       const task = await submit(db, config, { source: "cli", requester: "cli:t", repo: "o/r", issue: 7 }, { issues: host });
-      expect(task.goal).toBe("Resolve issue #7: App says broken");
+      expect(task.goal).toBe("Resolve issue #7 (attached)");
       expect(task.threadRef).toEqual({ kind: "thread", provider: "github", id: "o/r#7" });
 
       let attached = "";

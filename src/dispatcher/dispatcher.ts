@@ -19,6 +19,7 @@ import { Settings } from "../queue/settings.js";
 import { TaskStore, type Task } from "../queue/store.js";
 import type { Sandbox, SandboxProvider } from "../sandbox/sandbox.js";
 import { scanDiff } from "../security/secrets.js";
+import { foreignClosingRefs, neutralizeForGitHub, outOfScope, wrapUntrusted } from "../security/untrusted.js";
 import { GitHubError } from "../github/app.js";
 import { parseIssueRef, prDescription, prTitle, type CodeHost, type Issue, type IssueTracker } from "./pr.js";
 
@@ -73,8 +74,10 @@ const isPermanentGitHubError = (err: unknown) => err instanceof GitHubError && e
 export function decisionComment(taskId: string, short: string, raw: unknown): string {
   const q = Question.safeParse(raw);
   if (!q.success) return `Shira needs a decision to continue (${short}). See \`shira show ${taskId}\`.`;
-  const lines = [`Shira needs a ${q.data.kind} decision to continue (${short}):`, "", `> ${q.data.text}`];
-  if (q.data.options?.length) lines.push("", ...q.data.options.map((o, i) => `- \`${i}\`: ${o}`));
+  // Agent-written, so possibly steered by untrusted input: neutralized before posting.
+  const safe = neutralizeForGitHub;
+  const lines = [`Shira needs a ${q.data.kind} decision to continue (${short}):`, "", `> ${safe(q.data.text)}`];
+  if (q.data.options?.length) lines.push("", ...q.data.options.map((o, i) => `- \`${i}\`: ${safe(o)}`));
   const choice = q.data.options?.length ? " --choice <n>" : "";
   lines.push("", "Answer with:", "", "```", `shira answer ${taskId} --text "..."${choice}`, "```");
   return lines.join("\n");
@@ -422,6 +425,20 @@ export class Dispatcher {
       // Never pushed. No retry: the agent produced a credential, a human must look.
       return (await this.fail(task, { reason: "secret detected in diff", findings })).status;
     }
+    // Scope is enforced here, not only stated in the prompt: no text the agent read can widen
+    // it (FR-S5). Never pushed, no retry: a human decides whether the scope was wrong.
+    const changed = (await git(`git diff --name-only ${range}`)).stdout.split("\n").filter(Boolean);
+    const outside = outOfScope(changed, task.scope.paths);
+    if (outside.length) {
+      return (await this.fail(task, { reason: "changes outside the task's scope", paths: outside.slice(0, 50), scope: task.scope.paths })).status;
+    }
+    // GitHub acts on closing keywords in commit messages at merge: only the task's own issue may be named.
+    const issueRef = this.issueOf(task);
+    const messages = (await git(`git log --format=%B ${q(`origin/${base}`)}..HEAD`)).stdout;
+    const refs = foreignClosingRefs(messages, issueRef?.repo === task.repo ? issueRef.number : undefined);
+    if (refs.length) {
+      return (await this.fail(task, { reason: "commit messages close other issues", refs: refs.slice(0, 20) })).status;
+    }
     const diffStat = (await git(`git diff --stat ${range}`)).stdout;
 
     const push = await sandbox.exec(`git push --quiet -f origin HEAD:refs/heads/${q(branch)}`, { auth: "write" });
@@ -495,11 +512,15 @@ export class Dispatcher {
     const ref = this.issueOf(task);
     if (!ref || !this.deps.issues || !task.threadRef) return [];
     const issue: Issue = await this.deps.issues.getIssue(ref.repo, ref.number);
+    // Anyone who can open an issue wrote this, so it reaches the agent as marked data (FR-S5).
     const path = await sandbox.writeFile(
       `issue-${issue.number}.md`,
-      `# ${issue.title}\n\n${issue.body || "(no description)"}\n\n${issue.url}\n`,
+      wrapUntrusted(
+        { source: `GitHub issue ${ref.repo}#${issue.number}`, author: issue.author, url: issue.url },
+        `# ${issue.title}\n\n${issue.body || "(no description)"}`,
+      ),
     );
-    return [{ ref: task.threadRef, path }];
+    return [{ ref: task.threadRef, path, untrusted: true }];
   }
 
   /** Tells the issue what happened: the PR, the question that needs answering, or why the task failed. */
@@ -516,7 +537,9 @@ export class Dispatcher {
     } else if (status === "needs_decision") {
       body = decisionComment(task.id, short, last?.payload.question);
     } else {
-      body = `Shira couldn't complete this (${short}, ${cost}):\n\n> ${String(last?.payload.reason ?? "unknown reason").slice(0, 500)}`;
+      // Reasons can quote test output or agent text.
+      const reason = neutralizeForGitHub(String(last?.payload.reason ?? "unknown reason").slice(0, 500));
+      body = `Shira couldn't complete this (${short}, ${cost}):\n\n> ${reason}`;
     }
     await this.deps.issues.comment(ref.repo, ref.number, body);
   }
