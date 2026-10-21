@@ -106,6 +106,47 @@ describe("GitHubApp", () => {
     expect(issued.map((c) => c.body)).toEqual([{ repositories: ["web"], permissions: { metadata: "read", pull_requests: "read" } }]);
   });
 
+  it("proposes context changes on a branch and a PR, never writing to the base branch", async () => {
+    const exists = new Set<string>();
+    const gh = fakeGitHub({
+      ...tokenRoutes(() => new Date(Date.now() + 3600_000).toISOString()),
+      "GET /repos/acme/web/git/ref/heads/main": () => ({ body: { object: { sha: "b".repeat(40) } } }),
+      "POST /repos/acme/web/git/refs": (c) => {
+        const ref = (c.body as { ref: string }).ref;
+        if (exists.has(ref)) return { status: 422, body: { message: "Reference already exists" } };
+        exists.add(ref);
+        return { status: 201, body: {} };
+      },
+      "GET /repos/acme/web/contents/decisions/D-0001-x.md": () =>
+        exists.has("file") ? { body: { sha: "f".repeat(40) } } : { status: 404, body: { message: "Not Found" } },
+      "PUT /repos/acme/web/contents/decisions/D-0001-x.md": () => {
+        exists.add("file");
+        return { status: 201, body: {} };
+      },
+      "POST /repos/acme/web/pulls": () => ({ status: 201, body: { number: 3, html_url: "https://github.com/acme/web/pull/3" } }),
+    });
+    const app = new GitHubApp({ appId: "123", privateKey, fetch: gh.fetchImpl });
+    const change = {
+      repo: "acme/web",
+      base: "main",
+      branch: "shira/decision-d-0001",
+      files: [{ path: "decisions/D-0001-x.md", content: "# X\n" }],
+      title: "D-0001: X",
+      body: "Record.",
+    };
+    expect(await app.proposeChange(change)).toEqual({ number: 3, url: "https://github.com/acme/web/pull/3" });
+    await app.proposeChange(change); // a retry reuses the branch and updates the file
+
+    const puts = gh.calls.filter((c) => c.method === "PUT").map((c) => c.body as Record<string, string>);
+    expect(puts[0]).toEqual({ message: "D-0001: X", content: Buffer.from("# X\n").toString("base64"), branch: "shira/decision-d-0001" });
+    expect(puts[1]).toMatchObject({ branch: "shira/decision-d-0001", sha: "f".repeat(40) });
+    expect(gh.calls.filter((c) => c.method === "POST" && c.url.endsWith("/git/refs")).map((c) => c.body)).toEqual([
+      { ref: "refs/heads/shira/decision-d-0001", sha: "b".repeat(40) },
+      { ref: "refs/heads/shira/decision-d-0001", sha: "b".repeat(40) },
+    ]);
+    expect(gh.calls.filter((c) => c.method === "PUT" || c.method === "PATCH").every((c) => (c.body as { branch?: string }).branch !== "main")).toBe(true);
+  });
+
   it("refreshes a token close to expiry", async () => {
     let now = Date.parse("2026-10-19T12:00:00Z");
     const gh = fakeGitHub(tokenRoutes(() => new Date(now + 3600_000).toISOString()));
