@@ -72,6 +72,7 @@ export async function runDispatcher(
     ]),
     sandboxes: sandboxes(mode, github, apiKey),
     codeHost: github,
+    credentials: github,
     issues: github,
     instructions: contextLoader(process.env.SHIRA_CONTEXT_DIR ?? "context-template"),
     owner: `dispatcher-${hostname()}-${process.pid}`,

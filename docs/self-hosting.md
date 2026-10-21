@@ -45,6 +45,27 @@ merge. Repository content itself (code, `CLAUDE.md`) is trusted as part of onboa
 answers given with `shira answer` come from an operator. Chat and PR comments (M2) will
 go through the same wrapper.
 
+## Kill switch
+
+`shira kill on` stops every agent in the installation (PRD FR-S4):
+
+- No dispatcher claims a task while it is on.
+- A running task notices within 5 seconds. Its agent is stopped, its sandbox is destroyed
+  (which revokes the sandbox's egress grant and cuts its open connections), and the task
+  moves to `paused`. This doesn't use one of its retries. If the agent finished at the same
+  moment, nothing is pushed.
+- Each dispatcher revokes the GitHub installation tokens it holds, so none stay valid for
+  the rest of their hour. New ones are minted after `kill off`.
+
+`shira kill off` lets dispatchers claim again and lists the tasks the switch paused. Paused
+tasks don't restart on their own: check each one, then `shira resume <task-id>`. A resumed
+task starts a fresh run, or continues from its last checkpoint if it has one.
+
+The model API key isn't revoked: it is long-lived and shared, so rotate it at the provider
+if you suspect it leaked. A dispatcher that is down when the switch goes on can't act on it,
+but its tasks' leases expire, and the Shira Cloud host wrapper removes leftover sandboxes when
+the dispatcher restarts.
+
 ## Requirements
 
 - Linux with Docker and [gVisor](https://gvisor.dev/docs/user_guide/install/) registered as

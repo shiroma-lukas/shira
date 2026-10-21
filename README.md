@@ -57,7 +57,7 @@ pnpm shira migrate
 pnpm shira submit --repo example-org/example-repo --goal "Fix CSV export dropping non-ASCII names"
 pnpm shira list
 pnpm shira show <task-id>
-pnpm shira kill on          # pause all agents; `kill off` resumes
+pnpm shira kill on          # stop and pause running tasks, claim nothing (see docs/self-hosting.md)
 ```
 
 The concurrent-claim test needs a real Postgres and drops the schema of the database it is
