@@ -41,6 +41,24 @@ describe.skipIf(!url)("Postgres integration", () => {
     await adminPool?.end();
   });
 
+  it("manages the app user as a non-superuser admin, as on RDS", async () => {
+    // RDS's master user has CREATEROLE but not SUPERUSER, and administers shira_app because
+    // it created it. Roles are cluster-wide, so set this one up idempotently.
+    const admin = fromPool(adminPool);
+    await admin.exec(`DO $$ BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'shira_test_rds_admin') THEN
+        CREATE ROLE shira_test_rds_admin NOLOGIN CREATEROLE;
+      END IF;
+    END $$`);
+    await admin.exec("GRANT shira_app TO shira_test_rds_admin WITH ADMIN OPTION, INHERIT FALSE, SET FALSE");
+    await admin.exec("DROP ROLE IF EXISTS shira_test_rds_user");
+    await admin.transaction(async (tx) => {
+      await tx.exec("SET LOCAL ROLE shira_test_rds_admin");
+      expect(await ensureAppUser(tx, "shira_test_rds_user", "first-long-password")).toBe("created");
+      expect(await ensureAppUser(tx, "shira_test_rds_user", "second-long-password")).toBe("updated");
+    });
+  });
+
   it("logs in as the app user with no excess privileges", async () => {
     expect(await excessPrivileges(db)).toBeNull();
     await expect(db.query("DELETE FROM tasks")).rejects.toThrow(/permission denied/);
