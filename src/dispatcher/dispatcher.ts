@@ -14,6 +14,7 @@ import {
 import type { LoadedConfig } from "../config/load.js";
 import type { Db } from "../db/client.js";
 import { exceededBudget, Ledger } from "../ledger/ledger.js";
+import { getDecision } from "../decisions/decisions.js";
 import { CheckpointStore } from "../queue/checkpoints.js";
 import { Settings } from "../queue/settings.js";
 import { TaskStore, type Task } from "../queue/store.js";
@@ -675,10 +676,14 @@ export class Dispatcher {
     return ref?.kind === "thread" && ref.provider === "github" ? parseIssueRef(ref.id) : null;
   }
 
-  /** Writes the task's issue into the sandbox, since the agent can't read private issues itself. */
+  /**
+   * Writes the task's decision record and issue into the sandbox, since the agent can't
+   * read the context repo or private issues itself.
+   */
   private async attach(task: Task, sandbox: Sandbox) {
+    const decision = await this.attachDecision(task, sandbox);
     const ref = this.issueOf(task);
-    if (!ref || !this.deps.issues || !task.threadRef) return [];
+    if (!ref || !this.deps.issues || !task.threadRef) return decision;
     const issue: Issue = await this.deps.issues.getIssue(ref.repo, ref.number);
     // Anyone who can open an issue wrote this, so it reaches the agent as marked data (FR-S5).
     const path = await sandbox.writeFile(
@@ -688,7 +693,19 @@ export class Dispatcher {
         `# ${issue.title}\n\n${issue.body || "(no description)"}`,
       ),
     );
-    return [{ ref: task.threadRef, path, untrusted: true }];
+    return [...decision, { ref: task.threadRef, path, untrusted: true }];
+  }
+
+  /**
+   * The approved decision a task implements. Not marked untrusted: an authorized approval
+   * is what may set a task's direction (FR-S5), even when the proposal came from chat.
+   */
+  private async attachDecision(task: Task, sandbox: Sandbox) {
+    if (!task.decisionId) return [];
+    const decision = await getDecision(this.deps.db, task.decisionId);
+    if (!decision?.body) return [];
+    const path = await sandbox.writeFile(`decision-${decision.id}.md`, decision.body);
+    return [{ ref: { kind: "decision" as const, id: decision.id }, path }];
   }
 
   /**

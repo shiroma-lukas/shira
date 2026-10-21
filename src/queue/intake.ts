@@ -1,6 +1,7 @@
 import type { Ref } from "../contracts/index.js";
 import type { LoadedConfig } from "../config/load.js";
 import type { Db } from "../db/client.js";
+import { getDecision } from "../decisions/decisions.js";
 import type { IssueTracker } from "../dispatcher/pr.js";
 import { route, type IntakeRequest } from "./router.js";
 import { TaskStore, type Task } from "./store.js";
@@ -17,6 +18,8 @@ export interface SubmitRequest extends IntakeRequest {
   priority?: number;
   threadRef?: Ref;
   contextRefs?: Ref[];
+  /** The approved decision this task implements (FR-C2); must cover the task's repo. */
+  decisionId?: string;
 }
 
 /**
@@ -49,6 +52,13 @@ export async function submit(
     threadRef = { kind: "thread", provider: "github", id: `${req.repo}#${issue.number}` };
   }
   if (!goal) throw new Error("a task needs a goal or an issue");
+  if (req.decisionId) {
+    const decision = await getDecision(db, req.decisionId);
+    if (!decision) throw new Error(`decision ${req.decisionId} not found`);
+    if (decision.meta.repo && decision.meta.repo !== req.repo) {
+      throw new Error(`decision ${req.decisionId} was approved for ${decision.meta.repo}, not ${req.repo}`);
+    }
+  }
 
   // Config files are the source of truth for which repos exist; the table carries the kill flag per repo.
   await db.query(
@@ -68,6 +78,7 @@ export async function submit(
       scope: { repo: req.repo, paths: req.paths?.length ? req.paths : ["**"] },
       contextRefs: req.contextRefs ?? [],
       threadRef: threadRef ?? null,
+      decisionId: req.decisionId ?? null,
     },
     req.requester,
   );
