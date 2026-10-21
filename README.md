@@ -20,7 +20,7 @@ out is a per-sandbox egress allowlist ([self-hosting](docs/self-hosting.md)).
 | `docs/self-hosting.md` | Running Shira on one Linux machine with gVisor |
 | `src/contracts/` | Wire contracts (Zod): envelope, reply, statuses, adapter interface, agent and repo config, permissions |
 | `src/config/` | Loads and validates `config/` (`pnpm validate-config`) |
-| `src/db/` | Postgres client wrappers and migration runner |
+| `src/db/` | Postgres client wrappers, migration runner, and the least-privilege app role |
 | `src/queue/` | Task store (queue, leases, retries, audit events), routing rules, intake, platform settings |
 | `src/ledger/` | Cost ledger and budget checks |
 | `src/dispatcher/` | Claim-to-PR loop and the standard PR description |

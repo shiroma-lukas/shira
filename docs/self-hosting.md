@@ -39,6 +39,11 @@ export SHIRA_EGRESS_ADMIN_TOKEN=$(openssl rand -hex 24)
 docker compose --profile sandbox up -d --build --wait
 pnpm shira migrate
 
+# Dispatchers connect as a least-privilege user, not the admin (see "Database roles")
+export SHIRA_APP_DB_PASSWORD=$(openssl rand -hex 24)
+pnpm shira app-user
+export DATABASE_URL=postgres://shira_dispatcher:$SHIRA_APP_DB_PASSWORD@localhost:54329/shira
+
 export SHIRA_GITHUB_APP_ID=123456
 export SHIRA_GITHUB_PRIVATE_KEY_PATH=~/keys/shira.pem
 export ANTHROPIC_API_KEY=...
@@ -54,7 +59,8 @@ environment wins. Docker Compose reads the same file.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `DATABASE_URL` | `postgres://shira:shira@localhost:54329/shira` | Postgres |
+| `DATABASE_URL` | `postgres://shira:shira@localhost:54329/shira` | Postgres, as the app user (`shira app-user`) |
+| `SHIRA_ADMIN_DATABASE_URL` | `DATABASE_URL` | Admin connection for `migrate` and `app-user` only |
 | `SHIRA_CONFIG` | `./config` | Agent and repo definitions |
 | `SHIRA_CONTEXT_DIR` | `./context-template` | Context repo checkout (role instructions) |
 | `SHIRA_TRANSCRIPTS_DIR` | `./.shira/transcripts` | Redacted run transcripts on local disk |
@@ -64,6 +70,28 @@ environment wins. Docker Compose reads the same file.
 | `SHIRA_EGRESS_PROXY_URL` | `http://shira-egress:3128` | Proxy address as seen from sandboxes |
 | `SHIRA_EGRESS_ADMIN_URL` | `http://127.0.0.1:8080` | Proxy admin API, from the dispatcher |
 | `SHIRA_EGRESS_ADMIN_TOKEN` | (required) | Shared secret for the admin API |
+
+## Database roles
+
+The user that runs migrations owns the schema. Dispatchers and the CLI should connect as
+a login user in the `shira_app` role instead, which migration `0005` creates with only the
+privileges the code uses:
+
+- no `DELETE` on any table, and no schema changes (`ALTER`, `DROP`, `CREATE`)
+- inserts only on the audit log (`task_events`), checkpoints, and task dependencies; the
+  audit log's append-only trigger can't be dropped either
+- reads everywhere except `schema_migrations`; updates only on `tasks`, `runs`, and
+  `platform_settings`; disabling a repo stays an admin action
+
+`shira app-user [name]` (default `shira_dispatcher`) creates that login user, or resets its
+password if it exists. It reads the password from `SHIRA_APP_DB_PASSWORD` and sends Postgres
+only a SCRAM-SHA-256 verifier, so the plain password never reaches the server or its logs.
+Run it, like `migrate`, with the admin connection (`SHIRA_ADMIN_DATABASE_URL`, or
+`DATABASE_URL` when that is unset).
+
+`shira dispatch` warns at startup when it is connected as a superuser, the schema owner, or
+a user outside `shira_app`. The compose defaults use the `shira` superuser for convenience
+during development.
 
 ## Repo images
 

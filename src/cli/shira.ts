@@ -4,6 +4,7 @@ import { parseArgs } from "node:util";
 import pg from "pg";
 import { loadConfig } from "../config/load.js";
 import { TaskStatus } from "../contracts/index.js";
+import { ensureAppUser, excessPrivileges } from "../db/app-role.js";
 import { fromPool, type Db } from "../db/client.js";
 import { migrate } from "../db/migrate.js";
 import { Ledger } from "../ledger/ledger.js";
@@ -16,7 +17,10 @@ import { TaskStore, type Task } from "../queue/store.js";
 
 const USAGE = `usage: shira <command> [options]
 
-  migrate                                   apply database migrations
+  migrate                                   apply database migrations (as the admin user)
+  app-user [<name>]                         create or update the dispatchers' login user (default
+                                            shira_dispatcher) in the least-privilege shira_app role;
+                                            password from SHIRA_APP_DB_PASSWORD
   submit --repo <org/name> --goal <text>    queue a task
          [--issue <n>]                      ...or resolve a GitHub issue (goal optional)
          [--path <glob>]... [--priority <n>]
@@ -36,6 +40,7 @@ const USAGE = `usage: shira <command> [options]
 
 env: from the environment, then ./.env if present
      DATABASE_URL (default postgres://shira:shira@localhost:54329/shira), SHIRA_CONFIG (default ./config)
+     migrate and app-user connect with SHIRA_ADMIN_DATABASE_URL when set, else DATABASE_URL
      dispatch needs SHIRA_GITHUB_APP_ID, SHIRA_GITHUB_PRIVATE_KEY_PATH, ANTHROPIC_API_KEY, and for
      Docker SHIRA_EGRESS_ADMIN_TOKEN; see docs/self-hosting.md for the optional ones`;
 
@@ -58,6 +63,13 @@ async function main(db: Db, argv: string[]): Promise<void> {
     case "migrate": {
       const applied = await migrate(db);
       console.log(applied.length ? `applied: ${applied.join(", ")}` : "up to date");
+      return;
+    }
+    case "app-user": {
+      const password = process.env.SHIRA_APP_DB_PASSWORD;
+      if (!password) fail("set SHIRA_APP_DB_PASSWORD to the new user's password");
+      const name = rest[0] ?? "shira_dispatcher";
+      console.log(`${await ensureAppUser(db, name, password)} ${name}; point DATABASE_URL at it for dispatch and the CLI`);
       return;
     }
     case "submit": {
@@ -185,6 +197,8 @@ async function main(db: Db, argv: string[]): Promise<void> {
         : { kind: "docker", unsafeRuntime: flags["unsafe-runtime"] };
       const config = await loadConfig(process.env.SHIRA_CONFIG ?? "config");
       if (!config.ok) fail(config.errors.map((e) => `${e.file}: ${e.message}`).join("\n"));
+      const excess = await excessPrivileges(db);
+      if (excess) console.warn(`warning: ${excess}. Dispatchers should use a shira_app user (shira app-user).`);
       // SIGINT (Ctrl-C) and SIGTERM (systemd, containers) both finish the current task first.
       const stop = new AbortController();
       for (const sig of ["SIGINT", "SIGTERM"] as const) {
@@ -203,7 +217,14 @@ async function main(db: Db, argv: string[]): Promise<void> {
 }
 
 loadDotEnv();
-const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL ?? "postgres://shira:shira@localhost:54329/shira" });
+// Schema changes and role management need the admin user; everything else runs as the app user.
+const admin = ["migrate", "app-user"].includes(process.argv[2] ?? "");
+const pool = new pg.Pool({
+  connectionString:
+    (admin ? process.env.SHIRA_ADMIN_DATABASE_URL : undefined) ??
+    process.env.DATABASE_URL ??
+    "postgres://shira:shira@localhost:54329/shira",
+});
 try {
   await main(fromPool(pool), process.argv.slice(2));
 } catch (err) {

@@ -4,6 +4,8 @@
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { loadDotEnv } from "../src/cli/env.js";
+import { randomBytes } from "node:crypto";
+import { ensureAppUser, excessPrivileges } from "../src/db/app-role.js";
 import { fromPool, type Db } from "../src/db/client.js";
 import { migrate } from "../src/db/migrate.js";
 import { TaskStore } from "../src/queue/store.js";
@@ -13,18 +15,36 @@ loadDotEnv();
 const url = process.env.SHIRA_TEST_DATABASE_URL;
 
 describe.skipIf(!url)("Postgres integration", () => {
+  let adminPool: pg.Pool;
   let pool: pg.Pool;
   let db: Db;
 
   beforeAll(async () => {
-    pool = new pg.Pool({ connectionString: url, max: 20 });
+    adminPool = new pg.Pool({ connectionString: url, max: 2 });
+    const admin = fromPool(adminPool);
+    await admin.exec("DROP SCHEMA public CASCADE; CREATE SCHEMA public;");
+    await migrate(admin);
+    await admin.query("INSERT INTO repos (repo, config_ref) VALUES ('o/r', 'repos/r.yaml')");
+
+    // The rest runs as a real login user in the app role, as dispatchers do in production.
+    const password = randomBytes(18).toString("base64url");
+    await ensureAppUser(admin, "shira_test_app", password);
+    const appUrl = new URL(url!);
+    appUrl.username = "shira_test_app";
+    appUrl.password = password;
+    pool = new pg.Pool({ connectionString: appUrl.href, max: 20 });
     db = fromPool(pool);
-    await db.exec("DROP SCHEMA public CASCADE; CREATE SCHEMA public;");
-    await migrate(db);
-    await db.query("INSERT INTO repos (repo, config_ref) VALUES ('o/r', 'repos/r.yaml')");
   });
 
-  afterAll(() => pool?.end());
+  afterAll(async () => {
+    await pool?.end();
+    await adminPool?.end();
+  });
+
+  it("logs in as the app user with no excess privileges", async () => {
+    expect(await excessPrivileges(db)).toBeNull();
+    await expect(db.query("DELETE FROM tasks")).rejects.toThrow(/permission denied/);
+  });
 
   it("never hands the same task to two concurrent dispatchers", async () => {
     const store = new TaskStore(db);
