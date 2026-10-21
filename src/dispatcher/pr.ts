@@ -42,6 +42,8 @@ export interface PrDescriptionInput {
   diffStat: string;
   spend: Spend;
   runs: number;
+  /** Each run's redacted transcript (FR-L2), oldest first. */
+  transcripts?: { attempt: number; uri: string }[];
 }
 
 /** The agent's title when it gave one, else the goal's first sentence, trimmed to PR title length. */
@@ -82,6 +84,16 @@ export function prDescription(i: PrDescriptionInput): string {
     i.diffStat.trim(),
     "```",
     "",
+    ...(i.transcripts?.length
+      ? [
+          "## Transcripts",
+          "",
+          "Redacted, one per run. Readable by whoever operates this Shira installation.",
+          "",
+          ...i.transcripts.map((t) => `- Run ${t.attempt}: \`${t.uri}\``),
+          "",
+        ]
+      : []),
     "## Cost",
     "",
     `$${i.spend.usd.toFixed(2)} of $${t.budget.usd} budget, ${i.spend.tokens.toLocaleString("en-US")} tokens, ` +

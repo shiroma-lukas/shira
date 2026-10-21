@@ -151,6 +151,9 @@ describe("Dispatcher", () => {
     expect(host.prs[0]!.body).toContain("Fixed app.txt.");
     expect(host.prs[0]!.body).toContain("`grep -q fixed app.txt` passed");
     expect(host.prs[0]!.body).toMatch(/\$0\.10 of \$5 budget/);
+    const [run] = await new Ledger(db).runs(task.id);
+    expect(host.prs[0]!.body).toContain(`## Transcripts`);
+    expect(host.prs[0]!.body).toContain(`- Run 1: \`${run!.transcriptUri}\``);
     expect(await originBranches(origin)).toContain(`shira/${task.id.slice(0, 8)}`);
     expect((await new Ledger(db).taskSpend(task.id)).usd).toBeCloseTo(0.1);
     const done = (await store.events(task.id)).at(-1);

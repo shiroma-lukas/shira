@@ -510,6 +510,9 @@ export class Dispatcher {
         diffStat,
         spend,
         runs: run.attempt,
+        transcripts: (await this.ledger.runs(task.id))
+          .filter((r) => r.transcriptUri && r.transcriptUri !== "none")
+          .map((r) => ({ attempt: r.attempt, uri: r.transcriptUri! })),
       }),
       reply_id: reply.id,
     };

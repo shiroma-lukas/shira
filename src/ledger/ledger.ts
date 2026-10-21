@@ -55,6 +55,15 @@ export class Ledger {
     );
   }
 
+  /** Every run of a task, oldest first: what the PR and `shira show` link to (FR-L2). */
+  async runs(taskId: string): Promise<{ attempt: number; outcome: string | null; usd: number; transcriptUri: string | null }[]> {
+    const { rows } = await this.db.query<{ attempt: number; outcome: string | null; usd: string; transcript_uri: string | null }>(
+      "SELECT attempt, outcome, usd, transcript_uri FROM runs WHERE task_id = $1 ORDER BY attempt",
+      [taskId],
+    );
+    return rows.map((r) => ({ attempt: r.attempt, outcome: r.outcome, usd: Number(r.usd), transcriptUri: r.transcript_uri }));
+  }
+
   /** Total spend across every run of a task, including runs before a pause. */
   async taskSpend(taskId: string): Promise<Spend> {
     const { rows } = await this.db.query<{ usd: string; tokens: string; ms: string }>(

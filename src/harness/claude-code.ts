@@ -92,6 +92,18 @@ function isConfigError(result: ResultEvent): boolean {
   return /API Error: 40[0134]\b/.test(result.result ?? "");
 }
 
+/**
+ * The repo's CLAUDE.md, relative to the workspace, if it has one. Claude Code reads it from
+ * the repo root or `.claude/`; only the first found is passed.
+ */
+async function repoInstructions(input: StartInput): Promise<string | null> {
+  const probe = input.launch(["sh", "-c", 'for f in CLAUDE.md .claude/CLAUDE.md; do [ -f "$f" ] && { echo "$f"; exit 0; }; done; exit 0']);
+  let found: string | null = null;
+  for await (const line of probe.lines) found ??= line.trim() || null;
+  await probe.exited;
+  return found;
+}
+
 function renderTask(input: StartInput): string {
   const e = input.envelope;
   return [
@@ -144,7 +156,9 @@ function renderResume(input: ResumeInput): string {
  *
  * - Isolation from the sandbox host's Claude config: `--bare` skips hooks, plugins,
  *   and auto-memory and confines file tools to the workspace; `--strict-mcp-config`
- *   drops MCP servers. The target repo's CLAUDE.md is still read, which is wanted.
+ *   drops MCP servers. `--bare` also skips CLAUDE.md discovery, so the adapter passes the
+ *   repo's own CLAUDE.md explicitly (`--append-system-prompt-file`); onboarded repo content
+ *   is trusted. Nested CLAUDE.md files in subdirectories are not loaded.
  * - Auth: `--bare` ignores interactive logins, so the sandbox must provide
  *   ANTHROPIC_API_KEY (or a gateway equivalent).
  * - Dollar budget: `--max-budget-usd` stops the run at the task's remaining budget.
@@ -165,11 +179,11 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
   ) {}
 
   async start(input: StartInput): Promise<SessionHandle> {
-    return this.begin(input, renderTask(input));
+    return this.begin(input, renderTask(input), await repoInstructions(input));
   }
 
   async resume(input: ResumeInput): Promise<SessionHandle> {
-    return this.begin(input, renderResume(input));
+    return this.begin(input, renderResume(input), await repoInstructions(input));
   }
 
   async send(): Promise<void> {
@@ -194,7 +208,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
     }
   }
 
-  private begin(input: StartInput, prompt: string): SessionHandle {
+  private begin(input: StartInput, prompt: string, claudeMd: string | null): SessionHandle {
     const unknown = input.tools.filter((t) => !TOOLS[t]);
     if (unknown.length) throw new Error(`claude-code has no mapping for tool ids: ${unknown.join(", ")}`);
     const sessionId = randomUUID();
@@ -218,6 +232,8 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
       input.tools.flatMap((t) => TOOLS[t]!).join(","),
       "--append-system-prompt",
       input.instructions,
+      // Claude Code fails on a missing file, so only when the repo has one.
+      ...(claudeMd ? ["--append-system-prompt-file", claudeMd] : []),
       "--json-schema",
       JSON.stringify(REPLY_SCHEMA),
       "--max-budget-usd",
