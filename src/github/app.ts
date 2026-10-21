@@ -1,5 +1,6 @@
 import { createSign } from "node:crypto";
 import type { CodeHost, Issue, IssueTracker, PullRequestInfo, PullRequests, Review, ReviewComment } from "../dispatcher/pr.js";
+import type { ContextChanges } from "../decisions/decisions.js";
 import type { RepoAccess, RepoCredentials } from "../sandbox/sandbox.js";
 
 /** Installation token permissions per access level. Nothing beyond what the platform needs. */
@@ -52,7 +53,7 @@ const b64url = (data: string | Buffer) => Buffer.from(data).toString("base64url"
  * token scoped to one repository and the minimum permissions for the job, so a task
  * can never touch another repo, and only the platform ever holds write access.
  */
-export class GitHubApp implements CodeHost, IssueTracker, RepoCredentials, PullRequests {
+export class GitHubApp implements CodeHost, IssueTracker, RepoCredentials, PullRequests, ContextChanges {
   private readonly api: string;
   private readonly git: string;
   private readonly fetch: typeof fetch;
@@ -174,6 +175,44 @@ export class GitHubApp implements CodeHost, IssueTracker, RepoCredentials, PullR
       if (!open[0]) throw err;
       return { number: open[0].number, url: open[0].html_url };
     }
+  }
+
+  /**
+   * Proposes file changes to a repo as a PR from `branch` (context repo changes, FR-C4).
+   * Never touches `base` itself. Safe to repeat: an existing branch is reused, files are
+   * updated in place, and an open PR for the branch is returned.
+   */
+  async proposeChange(change: {
+    repo: string;
+    base: string;
+    branch: string;
+    files: { path: string; content: string }[];
+    title: string;
+    body: string;
+  }): Promise<{ number: number; url: string }> {
+    const write = `token ${await this.token(change.repo, "write")}`;
+    const { object } = await this.request<{ object: { sha: string } }>("GET", `/repos/${change.repo}/git/ref/heads/${change.base}`, write);
+    try {
+      await this.request("POST", `/repos/${change.repo}/git/refs`, write, { ref: `refs/heads/${change.branch}`, sha: object.sha });
+    } catch (err) {
+      if (!(err instanceof GitHubError && err.status === 422)) throw err; // branch exists: a retry
+    }
+    for (const f of change.files) {
+      const path = f.path.split("/").map(encodeURIComponent).join("/");
+      let sha: string | undefined;
+      try {
+        sha = (await this.request<{ sha: string }>("GET", `/repos/${change.repo}/contents/${path}?ref=${encodeURIComponent(change.branch)}`, write)).sha;
+      } catch (err) {
+        if (!(err instanceof GitHubError && err.status === 404)) throw err;
+      }
+      await this.request("PUT", `/repos/${change.repo}/contents/${path}`, write, {
+        message: change.title,
+        content: Buffer.from(f.content).toString("base64"),
+        branch: change.branch,
+        ...(sha ? { sha } : {}),
+      });
+    }
+    return this.openPullRequest({ repo: change.repo, head: change.branch, base: change.base, title: change.title, body: change.body });
   }
 
   async getIssue(repo: string, number: number): Promise<Issue> {
