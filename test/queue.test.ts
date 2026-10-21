@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { Db } from "../src/db/client.js";
 import { Settings } from "../src/queue/settings.js";
 import { TaskConflictError, TaskStore } from "../src/queue/store.js";
-import { newTask, testDb } from "./helpers.js";
+import { asAdmin, newTask, testDb } from "./helpers.js";
 
 describe("TaskStore", () => {
   let db: Db;
@@ -22,7 +22,9 @@ describe("TaskStore", () => {
 
   it("refuses repos that are not onboarded or are disabled", async () => {
     await expect(store.create(newTask({ repo: "o/x", scope: { repo: "o/x", paths: ["**"] } }), "a")).rejects.toThrow(/not onboarded/);
-    await db.query("UPDATE repos SET enabled = false");
+    // Disabling a repo is an operator action; the app role can't.
+    await expect(db.query("UPDATE repos SET enabled = false")).rejects.toThrow(/permission denied/);
+    await asAdmin(db, () => db.query("UPDATE repos SET enabled = false"));
     await expect(store.create(newTask(), "a")).rejects.toThrow(/disabled/);
   });
 
