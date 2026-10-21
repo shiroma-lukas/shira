@@ -120,6 +120,18 @@ Run it, like `migrate`, with the admin connection (`SHIRA_ADMIN_DATABASE_URL`, o
 a user outside `shira_app`. The compose defaults use the `shira` superuser for convenience
 during development.
 
+## Repo instructions and transcripts
+
+Workers run Claude Code in `--bare` mode, which ignores the host's Claude configuration
+and also skips CLAUDE.md discovery. Shira passes the repo's own `CLAUDE.md` (or
+`.claude/CLAUDE.md`) to every run explicitly, so the conventions a repo documents there
+still apply. `CLAUDE.md` files in subdirectories are not loaded.
+
+Each run's redacted transcript is stored where `SHIRA_TRANSCRIPTS_DIR` or
+`SHIRA_TRANSCRIPTS_URI` points. Its URI is listed under "Transcripts" in the PR
+description and per run in `shira show <task-id>`. Reading it takes access to that
+storage, which reviewers outside the installation don't have.
+
 ## Repo images
 
 A repo's `image` must contain git, coreutils (`timeout`), util-linux (`setsid`), procps (`kill`), and

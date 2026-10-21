@@ -90,6 +90,22 @@ describe("ClaudeCodeAdapter", () => {
     expect(args[args.indexOf("-p") + 1]).toContain(input.envelope.goal);
   });
 
+  it("passes the repo's CLAUDE.md, which --bare would skip, only when there is one", async () => {
+    await run("done");
+    expect(await lastArgs()).not.toContain("--append-system-prompt-file");
+
+    await sandbox.exec("mkdir -p .claude && echo 'Use pnpm.' > .claude/CLAUDE.md");
+    await run("done");
+    let args = await lastArgs();
+    expect(args[args.indexOf("--append-system-prompt-file") + 1]).toBe(".claude/CLAUDE.md");
+
+    await sandbox.exec("echo 'Run the tests first.' > CLAUDE.md");
+    await run("done");
+    args = await lastArgs();
+    expect(args[args.indexOf("--append-system-prompt-file") + 1]).toBe("CLAUDE.md");
+    expect(args[args.indexOf("--append-system-prompt") + 1]).toBe("You are a worker.");
+  });
+
   it("rejects tool ids it cannot map", async () => {
     await expect(adapter.start({ ...input, tools: ["teleport"] })).rejects.toThrow(/no mapping for tool ids: teleport/);
   });
