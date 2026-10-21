@@ -43,8 +43,9 @@ export async function submit(
     if (!deps.issues) throw new Error("submitting from an issue needs GitHub access (SHIRA_GITHUB_APP_ID and key)");
     const issue = await deps.issues.getIssue(req.repo, req.issue);
     if (issue.state !== "open") throw new Error(`${req.repo}#${issue.number} is ${issue.state}`);
-    // The goal names the issue; its full text reaches the agent as an attachment.
-    goal = [`Resolve issue #${issue.number}: ${issue.title}`, goal].filter(Boolean).join(". ").slice(0, 500);
+    // The goal is part of the agent's instructions, so it names the issue without quoting
+    // it: the title and body are untrusted and reach the agent as a marked attachment.
+    goal = [`Resolve issue #${issue.number} (attached)`, goal].filter(Boolean).join(". ").slice(0, 500);
     threadRef = { kind: "thread", provider: "github", id: `${req.repo}#${issue.number}` };
   }
   if (!goal) throw new Error("a task needs a goal or an issue");

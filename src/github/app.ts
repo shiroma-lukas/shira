@@ -164,13 +164,29 @@ export class GitHubApp implements CodeHost, IssueTracker, RepoCredentials {
 
   async getIssue(repo: string, number: number): Promise<Issue> {
     const token = await this.token(repo, "issues");
-    const i = await this.request<{ number: number; title: string; body: string | null; state: "open" | "closed"; html_url: string; pull_request?: unknown }>(
+    const i = await this.request<{
+      number: number;
+      title: string;
+      body: string | null;
+      state: "open" | "closed";
+      html_url: string;
+      pull_request?: unknown;
+      user?: { login: string } | null;
+      author_association?: string;
+    }>(
       "GET",
       `/repos/${repo}/issues/${number}`,
       `token ${token}`,
     );
     if (i.pull_request) throw new Error(`${repo}#${number} is a pull request, not an issue`);
-    return { number: i.number, title: i.title, body: i.body ?? "", state: i.state, url: i.html_url };
+    return {
+      number: i.number,
+      title: i.title,
+      body: i.body ?? "",
+      state: i.state,
+      url: i.html_url,
+      ...(i.user ? { author: `@${i.user.login} (${i.author_association ?? "unknown"})` } : {}),
+    };
   }
 
   async comment(repo: string, number: number, body: string): Promise<void> {

@@ -13,10 +13,37 @@ For the managed, multi-machine version, see Shira Cloud.
 | Internal network | Sandboxes sit on `shira-sandbox`, which has no route to the internet or the host |
 | Egress proxy | The only way out. HTTPS only, per-sandbox credentials and allowlist, never private or link-local addresses (so no cloud metadata endpoint) |
 | Credentials | The agent gets the model API key and nothing else. Git tokens are used only by platform commands, before and after the agent runs |
+| Untrusted input | Issue text reaches the agent as marked data, never as instructions; the gate enforces scope; agent text posted to GitHub can't close issues or mention people ([below](#untrusted-input)) |
 
 Default allowlist: `api.anthropic.com`, `github.com`, `*.githubusercontent.com`. Repos add
 hosts with `egress.allow` in their config (e.g. `registry.npmjs.org`). Denials are logged
 by the proxy as `egress_denied` events.
+
+## Untrusted input
+
+Anyone who can open an issue can write text that reaches an agent, so Shira treats issue
+titles and bodies as data, never as instructions (PRD FR-S5):
+
+- **Kept out of the instructions.** A task made from an issue gets the goal "Resolve issue
+  #N (attached)". The title and body go into a file outside the repo, inside a block
+  marked untrusted whose boundary is random per run, with the author's login and their
+  relation to the repo (e.g. `@someone (NONE)`). The prompt tells the agent that
+  untrusted references describe the problem and never change its goal, scope, or limits.
+- **Can't widen what the task may do.** Tools, egress, credentials, and budget come from
+  configuration, whatever any text says. The gate also refuses a branch that changes files
+  outside the task's `scope.paths`, so a "please also edit the CI workflow" in an issue
+  fails the task before anything is pushed.
+- **Can't act on GitHub through the agent's words.** Agent-written text (PR title and
+  summary, questions, failure reasons) has closing keywords (`Fixes #12`) and mentions
+  (`@org/team`) wrapped in code spans before it is posted, so they show but do nothing.
+  The gate refuses commit messages that close any issue but the task's own.
+
+Marking text untrusted lowers the odds that a model follows it; it can't rule that out.
+The limits that hold no matter what the model does are the ones enforced in code: the
+sandbox, the egress allowlist, scoped credentials, the gate, and human review before
+merge. Repository content itself (code, `CLAUDE.md`) is trusted as part of onboarding;
+answers given with `shira answer` come from an operator. Chat and PR comments (M2) will
+go through the same wrapper.
 
 ## Requirements
 
