@@ -10,7 +10,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "validate-config": "tsx src/config/validate.ts config",
+    "validate-config": "tsx src/config/validate.ts config context-template",
     "schemas": "tsx scripts/export-schemas.ts",
     "shira": "tsx src/cli/shira.ts",
     "build:egress": "esbuild src/egress/main.ts --bundle --platform=node --format=esm --target=node22 --outfile=dist/egress-proxy.mjs"

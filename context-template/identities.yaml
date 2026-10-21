@@ -1,0 +1,10 @@
+# yaml-language-server: $schema=../schemas/identities.json
+# People Shira knows (FR-H2). Ids are referenced by approvals.yaml and ownership.yaml.
+# A chat or GitHub account not listed here can't approve anything; its approvals are
+# recorded and ignored.
+identities:
+  - id: tech-lead-1
+    name: Example Tech Lead
+    github: example-tech-lead     # GitHub login, without "@"
+    slack: U0EXAMPLE1             # Slack member id (profile → ⋮ → Copy member ID)
+    roles: [tech-lead]

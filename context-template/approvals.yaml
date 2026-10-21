@@ -1,7 +1,10 @@
-# Who may approve which proposals (FR-H2). Used from M2.
-# A proposal is approved only if an approver matching every condition approves it.
+# yaml-language-server: $schema=../schemas/approvals.json
+# Who may approve which proposals (FR-H2), checked in code before any approval is acted on.
+# An identity may approve a proposal when some rule names it (or one of its roles) and
+# covers the proposal's repo, risk, and estimated cost. Approvals from anyone else are
+# recorded in the task's event log and ignored.
 rules:
-  - approvers: [tech-lead-1]
-    repos: [example-org/example-repo]
-    max_risk: high
+  - approver_roles: [tech-lead]
+    repos: [example-org/*]        # org/name, or org/* for every repo of an org
+    max_risk: high                # low | medium | high
     max_estimated_usd: 50
