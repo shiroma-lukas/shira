@@ -1,5 +1,6 @@
 import { formatUsd, type Spend } from "../ledger/ledger.js";
 import type { Task } from "../queue/store.js";
+import { neutralizeForGitHub } from "../security/untrusted.js";
 
 /** Opens pull requests on the code host. Production: GitHub App (FR-E3). */
 export interface CodeHost {
@@ -15,6 +16,8 @@ export interface Issue {
   body: string;
   state: "open" | "closed";
   url: string;
+  /** "@login (ASSOCIATION)", e.g. "@octocat (NONE)": shown to the agent next to the untrusted text. */
+  author?: string;
 }
 
 /** Reads and comments on issues. Production: the GitHub App (needs Issues: read and write). */
@@ -39,11 +42,13 @@ export interface PrDescriptionInput {
   diffStat: string;
   spend: Spend;
   runs: number;
+  /** Each run's redacted transcript (FR-L2), oldest first. */
+  transcripts?: { attempt: number; uri: string }[];
 }
 
 /** The agent's title when it gave one, else the goal's first sentence, trimmed to PR title length. */
 export function prTitle(task: Task, agentTitle?: string): string {
-  const source = agentTitle?.trim() || task.goal.split(/\n|(?<=\.)\s/)[0]!.trim();
+  const source = neutralizeForGitHub(agentTitle?.trim() || task.goal.split(/\n|(?<=\.)\s/)[0]!.trim());
   const title = source.replace(/\.$/, "");
   return title.length > 72 ? `${title.slice(0, 69)}...` : title;
 }
@@ -57,7 +62,8 @@ export function prDescription(i: PrDescriptionInput): string {
   return [
     "## Summary",
     "",
-    i.summary,
+    // The agent's words may echo untrusted input: they must not close issues or ping anyone.
+    neutralizeForGitHub(i.summary),
     ...(i.closes ? ["", `Fixes #${i.closes}`] : []),
     "",
     "## Decision",
@@ -78,6 +84,16 @@ export function prDescription(i: PrDescriptionInput): string {
     i.diffStat.trim(),
     "```",
     "",
+    ...(i.transcripts?.length
+      ? [
+          "## Transcripts",
+          "",
+          "Redacted, one per run. Readable by whoever operates this Shira installation.",
+          "",
+          ...i.transcripts.map((t) => `- Run ${t.attempt}: \`${t.uri}\``),
+          "",
+        ]
+      : []),
     "## Cost",
     "",
     `${formatUsd(i.spend)} of $${t.budget.usd} budget, ${i.spend.tokens.toLocaleString("en-US")} tokens, ` +

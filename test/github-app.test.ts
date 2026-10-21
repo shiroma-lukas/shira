@@ -30,7 +30,7 @@ function fakeGitHub(routes: Record<string, (call: Call) => { status?: number; bo
     calls.push(call);
     const route = routes[`${call.method} ${u.pathname}`];
     const { status = 200, body } = route ? route(call) : { status: 404, body: { message: "Not Found" } };
-    return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+    return new Response(status === 204 ? null : JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
   }) as typeof fetch;
   return { calls, fetchImpl };
 }
@@ -69,6 +69,22 @@ describe("GitHubApp", () => {
     ]);
     expect(gh.calls.filter((c) => c.url.endsWith("/installation"))).toHaveLength(1);
     expect(issued[0]!.auth).toMatch(/^Bearer ey/);
+  });
+
+  it("revokes every token it holds, then mints new ones (kill switch)", async () => {
+    const gh = fakeGitHub({
+      ...tokenRoutes(() => new Date(Date.now() + 3600_000).toISOString()),
+      "DELETE /installation/token": () => ({ status: 204, body: null }),
+    });
+    const app = new GitHubApp({ appId: "123", privateKey, fetch: gh.fetchImpl });
+    const read = await app.token("acme/web", "read");
+    const write = await app.token("acme/web", "write");
+
+    expect(await app.revokeTokens()).toBe(2);
+    const revoked = gh.calls.filter((c) => c.method === "DELETE").map((c) => c.auth);
+    expect(revoked.sort()).toEqual([`token ${read}`, `token ${write}`].sort());
+    expect(await app.token("acme/web", "read")).not.toBe(read);
+    expect(await app.revokeTokens()).toBe(1);
   });
 
   it("refreshes a token close to expiry", async () => {

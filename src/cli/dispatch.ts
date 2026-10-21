@@ -5,6 +5,7 @@ import type { LoadedConfig } from "../config/load.js";
 import type { Db } from "../db/client.js";
 import { Dispatcher } from "../dispatcher/dispatcher.js";
 import { GitHubApp } from "../github/app.js";
+import { loadPeople, syncIdentities } from "../people/people.js";
 import { ClaudeCodeAdapter } from "../harness/claude-code.js";
 import { harnessAccessFromEnv } from "../harness/providers.js";
 import { OpenRouterPriceTable } from "../ledger/prices.js";
@@ -65,6 +66,13 @@ export async function runDispatcher(
   const github = await githubFromEnv();
   const log = (m: string, f?: Record<string, unknown>) => console.log(new Date().toISOString(), m, f ? JSON.stringify(f) : "");
 
+  // People and approval rules from the context repo (FR-H2). Invalid files stop the
+  // dispatcher: acting on approvals with a broken matrix is worse than not starting.
+  const contextDir = process.env.SHIRA_CONTEXT_DIR ?? "context-template";
+  const people = await loadPeople(contextDir);
+  if (!people.ok) throw new Error(`context repo ${contextDir}:\n${people.errors.map((e) => `  ${e.file}: ${e.message}`).join("\n")}`);
+  await syncIdentities(db, people.people);
+
   // Fail at startup, not per task, when a configured agent's provider has no credential.
   // Claude Code runs with --bare, which ignores interactive logins.
   const harnessAccess = harnessAccessFromEnv(process.env);
@@ -91,8 +99,9 @@ export async function runDispatcher(
     sandboxes: sandboxes(mode, github),
     harnessAccess,
     codeHost: github,
+    credentials: github,
     issues: github,
-    instructions: contextLoader(process.env.SHIRA_CONTEXT_DIR ?? "context-template"),
+    instructions: contextLoader(contextDir),
     owner: `dispatcher-${hostname()}-${process.pid}`,
     log,
   });

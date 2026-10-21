@@ -12,9 +12,13 @@ requests that a human reviews (FR-C4).
 | `playbooks/` | How-to procedures (release, incident, onboarding a repo) | yes |
 | `roles/` | Canonical instructions per agent role, referenced by `instructions:` in agent definitions | yes |
 | `decisions/` | One decision record per approved proposal, `D-NNNN-slug.md` | approver |
+| `identities.yaml` | People: GitHub login, Slack id, roles (FR-H2) | n/a |
 | `ownership.yaml` | Who owns which repos and paths, and how to contact them | n/a |
-| `approvals.yaml` | Who may approve which proposals (FR-H2, used from M2) | n/a |
+| `approvals.yaml` | Who may approve which proposals, by repo, risk, and estimated cost (FR-H2) | n/a |
 | `glossary.md` | Terms agents must use consistently | yes |
+
+`pnpm validate-config` checks the three YAML files, including that every identity they
+name exists.
 
 Every Markdown document starts with front matter naming an `owner` and a `reviewed` date,
 so staleness can be reported (FR-C5, from M4).

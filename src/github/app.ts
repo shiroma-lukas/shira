@@ -88,7 +88,7 @@ export class GitHubApp implements CodeHost, IssueTracker, RepoCredentials {
       ...(body ? { body: JSON.stringify(body) } : {}),
     });
     if (!res.ok) throw new GitHubError(method, path, res.status, (await res.text()).slice(0, 500));
-    return (await res.json()) as T;
+    return (res.status === 204 ? undefined : await res.json()) as T;
   }
 
   private async installationId(repo: string): Promise<number> {
@@ -114,6 +114,19 @@ export class GitHubApp implements CodeHost, IssueTracker, RepoCredentials {
     );
     this.tokens.set(key, { token, expiresAt: Date.parse(expires_at) });
     return token;
+  }
+
+  /**
+   * Revokes every installation token this process holds (kill switch, FR-S4). They would
+   * otherwise stay valid for up to an hour. New tokens are minted on the next request.
+   */
+  async revokeTokens(): Promise<number> {
+    const held = [...this.tokens.values()].filter((t) => t.expiresAt > this.now());
+    this.tokens.clear();
+    const results = await Promise.allSettled(held.map((t) => this.request("DELETE", "/installation/token", `token ${t.token}`)));
+    const failed = results.filter((r) => r.status === "rejected");
+    if (failed.length) throw new Error(`revoking ${failed.length} of ${held.length} tokens failed: ${(failed[0] as PromiseRejectedResult).reason}`);
+    return held.length;
   }
 
   cloneUrl(repo: string): string {
@@ -164,13 +177,29 @@ export class GitHubApp implements CodeHost, IssueTracker, RepoCredentials {
 
   async getIssue(repo: string, number: number): Promise<Issue> {
     const token = await this.token(repo, "issues");
-    const i = await this.request<{ number: number; title: string; body: string | null; state: "open" | "closed"; html_url: string; pull_request?: unknown }>(
+    const i = await this.request<{
+      number: number;
+      title: string;
+      body: string | null;
+      state: "open" | "closed";
+      html_url: string;
+      pull_request?: unknown;
+      user?: { login: string } | null;
+      author_association?: string;
+    }>(
       "GET",
       `/repos/${repo}/issues/${number}`,
       `token ${token}`,
     );
     if (i.pull_request) throw new Error(`${repo}#${number} is a pull request, not an issue`);
-    return { number: i.number, title: i.title, body: i.body ?? "", state: i.state, url: i.html_url };
+    return {
+      number: i.number,
+      title: i.title,
+      body: i.body ?? "",
+      state: i.state,
+      url: i.html_url,
+      ...(i.user ? { author: `@${i.user.login} (${i.author_association ?? "unknown"})` } : {}),
+    };
   }
 
   async comment(repo: string, number: number, body: string): Promise<void> {

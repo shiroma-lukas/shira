@@ -2,8 +2,17 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { z } from "zod";
 import { AgentDefinition, Envelope, RepoConfig, Reply } from "../src/contracts/index.js";
+import { ApprovalsFile, IdentitiesFile, OwnershipFile } from "../src/contracts/people.js";
 
-const schemas = { agent: AgentDefinition, repo: RepoConfig, envelope: Envelope, reply: Reply };
+const schemas = {
+  agent: AgentDefinition,
+  repo: RepoConfig,
+  envelope: Envelope,
+  reply: Reply,
+  identities: IdentitiesFile,
+  approvals: ApprovalsFile,
+  ownership: OwnershipFile,
+};
 
 await mkdir("schemas", { recursive: true });
 for (const [name, schema] of Object.entries(schemas)) {

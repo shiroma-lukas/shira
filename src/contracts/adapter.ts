@@ -65,7 +65,7 @@ export interface StartInput {
    * Local copies of refs the agent can't fetch itself (e.g. a private GitHub issue),
    * written by the platform into the sandbox outside the repo.
    */
-  attachments?: readonly { ref: Ref; path: string }[];
+  attachments?: readonly { ref: Ref; path: string; untrusted?: boolean }[];
 }
 
 export interface ResumeInput extends StartInput {

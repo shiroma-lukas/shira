@@ -1,4 +1,5 @@
-# Who owns what, and how to reach them (FR-H6). Identity ids match the identities table.
+# yaml-language-server: $schema=../schemas/ownership.json
+# Who owns what, and how to reach them (FR-H6). Identity ids come from identities.yaml.
 owners:
   - identity: tech-lead-1
     repos: [example-org/example-repo]

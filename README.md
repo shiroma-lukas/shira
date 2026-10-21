@@ -21,7 +21,7 @@ out is a per-sandbox egress allowlist ([self-hosting](docs/self-hosting.md)).
 | `docs/providers.md` | Model providers (Anthropic, OpenRouter): credentials, egress, cost |
 | `src/contracts/` | Wire contracts (Zod): envelope, reply, statuses, adapter interface, agent and repo config, permissions |
 | `src/config/` | Loads and validates `config/` (`pnpm validate-config`) |
-| `src/db/` | Postgres client wrappers and migration runner |
+| `src/db/` | Postgres client wrappers, migration runner, and the least-privilege app role |
 | `src/queue/` | Task store (queue, leases, retries, audit events), routing rules, intake, platform settings |
 | `src/ledger/` | Cost ledger, budget checks, and model price tables |
 | `src/dispatcher/` | Claim-to-PR loop and the standard PR description |
@@ -58,7 +58,7 @@ pnpm shira migrate
 pnpm shira submit --repo example-org/example-repo --goal "Fix CSV export dropping non-ASCII names"
 pnpm shira list
 pnpm shira show <task-id>
-pnpm shira kill on          # pause all agents; `kill off` resumes
+pnpm shira kill on          # stop and pause running tasks, claim nothing (see docs/self-hosting.md)
 ```
 
 The concurrent-claim test needs a real Postgres and drops the schema of the database it is

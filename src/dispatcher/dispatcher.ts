@@ -20,6 +20,7 @@ import { Settings } from "../queue/settings.js";
 import { TaskStore, type Task } from "../queue/store.js";
 import type { HarnessAccess, Sandbox, SandboxProvider } from "../sandbox/sandbox.js";
 import { scanDiff } from "../security/secrets.js";
+import { foreignClosingRefs, neutralizeForGitHub, outOfScope, wrapUntrusted } from "../security/untrusted.js";
 import { GitHubError } from "../github/app.js";
 import { parseIssueRef, prDescription, prTitle, type CodeHost, type Issue, type IssueTracker } from "./pr.js";
 
@@ -36,6 +37,8 @@ export interface DispatcherDeps {
    */
   harnessAccess?: (choice: ModelChoice) => HarnessAccess;
   codeHost: CodeHost;
+  /** Revokes the code host credentials this process holds when the kill switch goes on (FR-S4). */
+  credentials?: { revokeTokens(): Promise<number> };
   /** Reads issues for the agent and comments on them. Without it, issue links still work but nothing is posted. */
   issues?: IssueTracker;
   /** Loads a role's instructions from the context repo by path. */
@@ -43,11 +46,14 @@ export interface DispatcherDeps {
   /** Unique per dispatcher process; recorded as the lease owner. */
   owner: string;
   leaseMs?: number;
+  /** How often a running task checks the kill switch. Default 5 s. */
+  killPollMs?: number;
   log?: (message: string, fields?: Record<string, unknown>) => void;
 }
 
 export type TickResult =
   | { kind: "idle" }
+  | { kind: "killed" }
   | { kind: "budget_exhausted"; monthSpendUsd: number }
   | { kind: "ran"; taskId: string; status: TaskStatus };
 
@@ -80,8 +86,10 @@ const isPermanentGitHubError = (err: unknown) => err instanceof GitHubError && e
 export function decisionComment(taskId: string, short: string, raw: unknown): string {
   const q = Question.safeParse(raw);
   if (!q.success) return `Shira needs a decision to continue (${short}). See \`shira show ${taskId}\`.`;
-  const lines = [`Shira needs a ${q.data.kind} decision to continue (${short}):`, "", `> ${q.data.text}`];
-  if (q.data.options?.length) lines.push("", ...q.data.options.map((o, i) => `- \`${i}\`: ${o}`));
+  // Agent-written, so possibly steered by untrusted input: neutralized before posting.
+  const safe = neutralizeForGitHub;
+  const lines = [`Shira needs a ${q.data.kind} decision to continue (${short}):`, "", `> ${safe(q.data.text)}`];
+  if (q.data.options?.length) lines.push("", ...q.data.options.map((o, i) => `- \`${i}\`: ${safe(o)}`));
   const choice = q.data.options?.length ? " --choice <n>" : "";
   lines.push("", "Answer with:", "", "```", `shira answer ${taskId} --text "..."${choice}`, "```");
   return lines.join("\n");
@@ -112,6 +120,10 @@ export class Dispatcher {
   private readonly ledger: Ledger;
   private readonly checkpoints: CheckpointStore;
   private readonly leaseMs: number;
+  private readonly killPollMs: number;
+  private readonly settings: Settings;
+  /** Set once this process has revoked its credentials for the current kill; cleared when it's lifted. */
+  private revokedForKill = false;
   private readonly log: NonNullable<DispatcherDeps["log"]>;
 
   constructor(private readonly deps: DispatcherDeps) {
@@ -119,6 +131,8 @@ export class Dispatcher {
     this.ledger = new Ledger(deps.db);
     this.checkpoints = new CheckpointStore(deps.db);
     this.leaseMs = deps.leaseMs ?? 60_000;
+    this.killPollMs = deps.killPollMs ?? 5_000;
+    this.settings = new Settings(deps.db);
     this.log = deps.log ?? ((m, f) => console.log(m, f ?? ""));
   }
 
@@ -126,7 +140,23 @@ export class Dispatcher {
   async tick(): Promise<TickResult> {
     await this.store.reapExpiredLeases(this.deps.owner);
 
-    const monthly = await new Settings(this.deps.db).monthlyBudgetUsd();
+    // Kill switch (FR-S4): claim nothing, and revoke the credentials this process holds.
+    // Running tasks notice on their own (supervise) and pause.
+    if (await this.settings.agentsPaused()) {
+      if (!this.revokedForKill) {
+        this.revokedForKill = true;
+        const revoked = await this.deps.credentials?.revokeTokens().catch((err: Error) => {
+          this.revokedForKill = false; // try again on the next tick
+          this.log("kill switch: revoking credentials failed", { error: err.message });
+          return null;
+        });
+        if (revoked !== null) this.log("kill switch: credentials revoked", { tokens: revoked ?? 0 });
+      }
+      return { kind: "killed" };
+    }
+    this.revokedForKill = false;
+
+    const monthly = await this.settings.monthlyBudgetUsd();
     if (monthly !== null) {
       const spent = await this.ledger.monthSpendUsd();
       if (spent >= monthly) return { kind: "budget_exhausted", monthSpendUsd: spent };
@@ -235,6 +265,9 @@ export class Dispatcher {
         return (await this.retry(task, message)).status;
       }
 
+      // Setup can take minutes; don't start the agent if the kill switch went on meanwhile.
+      if (await this.settings.agentsPaused()) return (await this.pauseForKill(task, "before the run")).status;
+
       const { model, provider } = agent.model.primary;
       const run = await this.ledger.startRun({ taskId: task.id, role: task.role, harness: adapter.id, model });
       const input = {
@@ -259,6 +292,8 @@ export class Dispatcher {
       this.log("run finished", { task: task.id, run: run.id, outcome: outcome.kind === "reply" ? outcome.reply.status : outcome.reason });
 
       if (stopped === "cancelled") return (await this.store.get(task.id))!.status;
+      // Even if the agent finished at the same moment: nothing is pushed while the switch is on.
+      if (stopped === "killed") return (await this.pauseForKill(task, "during the run")).status;
       if (outcome.kind === "aborted") {
         if (outcome.reason === "timeout" || outcome.reason === "budget_exceeded") {
           return (await this.fail(task, { reason: outcome.reason, detail: outcome.detail })).status;
@@ -274,16 +309,26 @@ export class Dispatcher {
     }
   }
 
-  /** Waits for the run, renewing the lease and enforcing the time limit. */
+  /**
+   * Kill switch (FR-S4): the task goes to `paused` without using a retry. The sandbox is
+   * destroyed on the way out, which revokes its egress grant and cuts open connections.
+   * `shira resume` requeues it once the switch is off.
+   */
+  private pauseForKill(task: Task, stage: string) {
+    this.log("kill switch: task paused", { task: task.id, stage });
+    return this.store.transition(task.id, "paused", { actor: this.deps.owner, from: "running", payload: { reason: "kill switch", stage } });
+  }
+
+  /** Waits for the run, renewing the lease, enforcing the time limit, and watching the kill switch. */
   private async supervise(
     task: Task,
     adapter: HarnessAdapter,
     session: SessionHandle,
     limitMs: number,
     model: string,
-  ): Promise<{ outcome: RunOutcome; stopped: "cancelled" | "timeout" | null }> {
-    let stopped: "cancelled" | "timeout" | null = null;
-    const stop = (why: "cancelled" | "timeout") => {
+  ): Promise<{ outcome: RunOutcome; stopped: "cancelled" | "timeout" | "killed" | null }> {
+    let stopped: "cancelled" | "timeout" | "killed" | null = null;
+    const stop = (why: "cancelled" | "timeout" | "killed") => {
       if (stopped) return;
       stopped = why;
       adapter.cancel(session).catch((err) => this.log("cancel failed", { error: (err as Error).message }));
@@ -295,6 +340,12 @@ export class Dispatcher {
         .then((held) => held || stop("cancelled"))
         .catch((err) => this.log("lease renewal failed", { error: (err as Error).message }));
     }, this.leaseMs / 3);
+    const killWatch = setInterval(() => {
+      this.settings
+        .agentsPaused()
+        .then((paused) => paused && stop("killed"))
+        .catch((err) => this.log("kill switch check failed", { error: (err as Error).message }));
+    }, this.killPollMs);
 
     let outcome: RunOutcome;
     try {
@@ -311,6 +362,7 @@ export class Dispatcher {
     } finally {
       clearTimeout(timer);
       clearInterval(renewal);
+      clearInterval(killWatch);
     }
     // The adapter may report a cancellation we caused as an error; the platform's reason wins.
     if (stopped === "timeout" && outcome.kind === "aborted") outcome = { ...outcome, reason: "timeout" };
@@ -437,8 +489,23 @@ export class Dispatcher {
       // Never pushed. No retry: the agent produced a credential, a human must look.
       return (await this.fail(task, { reason: "secret detected in diff", findings })).status;
     }
+    // Scope is enforced here, not only stated in the prompt: no text the agent read can widen
+    // it (FR-S5). Never pushed, no retry: a human decides whether the scope was wrong.
+    const changed = (await git(`git diff --name-only ${range}`)).stdout.split("\n").filter(Boolean);
+    const outside = outOfScope(changed, task.scope.paths);
+    if (outside.length) {
+      return (await this.fail(task, { reason: "changes outside the task's scope", paths: outside.slice(0, 50), scope: task.scope.paths })).status;
+    }
+    // GitHub acts on closing keywords in commit messages at merge: only the task's own issue may be named.
+    const issueRef = this.issueOf(task);
+    const messages = (await git(`git log --format=%B ${q(`origin/${base}`)}..HEAD`)).stdout;
+    const refs = foreignClosingRefs(messages, issueRef?.repo === task.repo ? issueRef.number : undefined);
+    if (refs.length) {
+      return (await this.fail(task, { reason: "commit messages close other issues", refs: refs.slice(0, 20) })).status;
+    }
     const diffStat = (await git(`git diff --stat ${range}`)).stdout;
 
+    if (await this.settings.agentsPaused()) return (await this.pauseForKill(task, "before push")).status;
     const push = await sandbox.exec(`git push --quiet -f origin HEAD:refs/heads/${q(branch)}`, { auth: "write" });
     if (push.code !== 0) return (await this.retry(task, `push failed: ${tail(push.stderr, 500)}`)).status;
 
@@ -458,6 +525,9 @@ export class Dispatcher {
         diffStat,
         spend,
         runs: run.attempt,
+        transcripts: (await this.ledger.runs(task.id))
+          .filter((r) => r.transcriptUri && r.transcriptUri !== "none")
+          .map((r) => ({ attempt: r.attempt, uri: r.transcriptUri! })),
       }),
       reply_id: reply.id,
     };
@@ -467,6 +537,8 @@ export class Dispatcher {
   }
 
   private async openPr(task: Task, pending: PendingPr): Promise<TaskStatus> {
+    // The pending note is recorded, so a resume opens this PR without re-running the agent.
+    if (await this.settings.agentsPaused()) return (await this.pauseForKill(task, "before opening the PR")).status;
     let pr;
     try {
       pr = await this.deps.codeHost.openPullRequest({
@@ -510,11 +582,15 @@ export class Dispatcher {
     const ref = this.issueOf(task);
     if (!ref || !this.deps.issues || !task.threadRef) return [];
     const issue: Issue = await this.deps.issues.getIssue(ref.repo, ref.number);
+    // Anyone who can open an issue wrote this, so it reaches the agent as marked data (FR-S5).
     const path = await sandbox.writeFile(
       `issue-${issue.number}.md`,
-      `# ${issue.title}\n\n${issue.body || "(no description)"}\n\n${issue.url}\n`,
+      wrapUntrusted(
+        { source: `GitHub issue ${ref.repo}#${issue.number}`, author: issue.author, url: issue.url },
+        `# ${issue.title}\n\n${issue.body || "(no description)"}`,
+      ),
     );
-    return [{ ref: task.threadRef, path }];
+    return [{ ref: task.threadRef, path, untrusted: true }];
   }
 
   /** Tells the issue what happened: the PR, the question that needs answering, or why the task failed. */
@@ -531,7 +607,9 @@ export class Dispatcher {
     } else if (status === "needs_decision") {
       body = decisionComment(task.id, short, last?.payload.question);
     } else {
-      body = `Shira couldn't complete this (${short}, ${cost}):\n\n> ${String(last?.payload.reason ?? "unknown reason").slice(0, 500)}`;
+      // Reasons can quote test output or agent text.
+      const reason = neutralizeForGitHub(String(last?.payload.reason ?? "unknown reason").slice(0, 500));
+      body = `Shira couldn't complete this (${short}, ${cost}):\n\n> ${reason}`;
     }
     await this.deps.issues.comment(ref.repo, ref.number, body);
   }
