@@ -123,7 +123,7 @@ async function main(db: Db, argv: string[]): Promise<void> {
       );
       console.log(`  scope ${task.scope.paths.join(", ")}`);
       for (const r of await new Ledger(db).runs(id)) {
-        console.log(`  run ${r.attempt}  ${(r.outcome ?? "running").padEnd(15)} $${r.usd.toFixed(2)}  ${r.transcriptUri ?? "(no transcript yet)"}`);
+        console.log(`  run ${r.attempt}  ${(r.outcome ?? "running").padEnd(15)} ${r.usd === null ? "$?" : `$${r.usd.toFixed(2)}`}  ${r.transcriptUri ?? "(no transcript yet)"}`);
       }
       const events = await store.events(id);
       for (const l of linkLines(task, events)) console.log(l);

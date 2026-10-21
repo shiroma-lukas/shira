@@ -42,6 +42,17 @@ switch (scenario) {
       structured_output: { status: "done", summary: "Fixed app.txt." },
     });
     break;
+  case "overspend": {
+    // Streams usage like Claude Code does: one event per content block, the same usage on
+    // each, and output_tokens as of the message's start. Then keeps going until killed.
+    const assistant = (id, input_tokens, content) =>
+      emit({ type: "assistant", message: { id, content, usage: { input_tokens, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } });
+    assistant("msg_1", 1_000_000, [{ type: "text", text: "x".repeat(300) }]);
+    assistant("msg_1", 1_000_000, [{ type: "tool_use", id: "t1", name: "Bash", input: { command: "ls" } }]);
+    assistant("msg_2", 2_000_000, [{ type: "text", text: "y".repeat(300) }]);
+    setInterval(() => {}, 1000);
+    break;
+  }
   case "no_credits":
     result({ is_error: true, api_error_status: 402, result: "API Error: 402 Insufficient credits", total_cost_usd: 0 });
     break;

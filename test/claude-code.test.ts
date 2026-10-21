@@ -234,6 +234,35 @@ describe("ClaudeCodeAdapter", () => {
       expect(outcome.usage.inputTokens).toBe(1_000_000);
     });
 
+    it("reports a model it can't price as unavailable, so no run starts without a dollar cap", async () => {
+      expect(adapter.unavailable("openrouter", "z-ai/glm-5.3-flash")).toMatch(/no price for z-ai\/glm-5.3-flash on openrouter/);
+      expect(adapter.unavailable("anthropic", "claude-sonnet-5-5")).toBeNull();
+      const priced = new ClaudeCodeAdapter({ transcripts: new FileTranscriptStore(tmpdir()), binary, prices: () => ({ input: 1, output: 1 }) });
+      expect(priced.unavailable("openrouter", "z-ai/glm-5.3-flash")).toBeNull();
+    });
+
+    it("stops the run mid-way at the remaining budget, from streamed usage", async () => {
+      const priced = new ClaudeCodeAdapter({
+        transcripts: new FileTranscriptStore(await mkdtemp(join(tmpdir(), "shira-cc-"))),
+        binary,
+        prices: () => ({ input: 1e-7, output: 1e-6 }),
+      });
+      process.env.FAKE_CLAUDE_SCENARIO = "overspend";
+      const outcome = await priced.result(await priced.start({ ...glm(), remaining: { usd: 0.25 } }));
+      expect(outcome).toMatchObject({ kind: "aborted", reason: "budget_exceeded" });
+      // msg_1's two events count once; output is estimated from content, not the streamed 1.
+      expect(outcome.usage.inputTokens).toBe(3_000_000);
+      const output = outcome.usage.outputTokens;
+      expect(output).toBeGreaterThanOrEqual(200);
+      expect(outcome.usage.usd).toBeCloseTo(0.3 + output * 1e-6);
+    });
+
+    it("records the cost as unknown when it crashed before streaming any usage", async () => {
+      const priced = new ClaudeCodeAdapter({ transcripts: new FileTranscriptStore(tmpdir()), binary, prices: () => ({ input: 1, output: 1 }) });
+      process.env.FAKE_CLAUDE_SCENARIO = "crash";
+      expect((await priced.result(await priced.start(glm()))).usage.usd).toBeNull();
+    });
+
     it("fails at once when OpenRouter is out of credits", async () => {
       expect(await run("no_credits", glm())).toMatchObject({ kind: "aborted", reason: "config_error" });
     });

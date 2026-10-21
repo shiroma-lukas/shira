@@ -54,7 +54,8 @@ export interface DispatcherDeps {
 export type TickResult =
   | { kind: "idle" }
   | { kind: "killed" }
-  | { kind: "budget_exhausted"; monthSpendUsd: number }
+  /** `unpricedRuns` were counted at their task's dollar budget (see `Ledger.monthSpend`). */
+  | { kind: "budget_exhausted"; monthSpendUsd: number; unpricedRuns: number }
   | { kind: "ran"; taskId: string; status: TaskStatus };
 
 const ZERO_USAGE = (model: string) => ({
@@ -124,6 +125,7 @@ export class Dispatcher {
   private readonly settings: Settings;
   /** Set once this process has revoked its credentials for the current kill; cleared when it's lifted. */
   private revokedForKill = false;
+  private loggedExhaustion: string | null = null;
   private readonly log: NonNullable<DispatcherDeps["log"]>;
 
   constructor(private readonly deps: DispatcherDeps) {
@@ -158,8 +160,20 @@ export class Dispatcher {
 
     const monthly = await this.settings.monthlyBudgetUsd();
     if (monthly !== null) {
-      const spent = await this.ledger.monthSpendUsd();
-      if (spent >= monthly) return { kind: "budget_exhausted", monthSpendUsd: spent };
+      const spent = await this.ledger.monthSpend();
+      if (spent.usd >= monthly) {
+        // Said once per state, not on every idle tick.
+        const state = `${spent.usd}/${spent.unpricedRuns}`;
+        if (spent.unpricedRuns && this.loggedExhaustion !== state) {
+          this.log("monthly budget reached counting runs with unknown cost at their task budget", {
+            monthSpendUsd: spent.usd,
+            unpricedRuns: spent.unpricedRuns,
+            monthlyBudgetUsd: monthly,
+          });
+        }
+        this.loggedExhaustion = state;
+        return { kind: "budget_exhausted", monthSpendUsd: spent.usd, unpricedRuns: spent.unpricedRuns };
+      }
     }
 
     const task = await this.store.claim(this.deps.owner, this.leaseMs);
@@ -240,6 +254,8 @@ export class Dispatcher {
     } catch (err) {
       return (await this.failPermanently(task, `model provider: ${(err as Error).message}`)).status;
     }
+    const unavailable = adapter.unavailable?.(agent.model.primary.provider, agent.model.primary.model);
+    if (unavailable) return (await this.retry(task, unavailable)).status;
 
     let sandbox: Sandbox;
     try {

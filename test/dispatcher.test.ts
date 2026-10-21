@@ -229,20 +229,16 @@ describe("Dispatcher", () => {
       expect(host.prs[0]?.body).toContain("$0.19 of $5 budget");
     });
 
-    it("records an unpriced run as unknown cost, not zero", async () => {
-      process.env.FAKE_CLAUDE_SCENARIO = "unknown_model";
+    it("doesn't start a run for a model it can't price, and retries instead", async () => {
       const task = await store.create(newTask({ budget }), "cli:test");
       const adapter = new ClaudeCodeAdapter({
         transcripts: new FileTranscriptStore(await mkdtemp(join(tmpdir(), "shira-transcripts-"))),
         binary: fileURLToPath(new URL("./fixtures/fake-claude.mjs", import.meta.url)),
       });
-      try {
-        expect(await glmDispatcher(adapter, { OPENROUTER_API_KEY: "sk-or-test" }).tick()).toMatchObject({ status: "done" });
-      } finally {
-        delete process.env.FAKE_CLAUDE_SCENARIO;
-      }
-      expect(await new Ledger(db).taskSpend(task.id)).toMatchObject({ usd: 0, unpricedRuns: 1 });
-      expect(host.prs[0]?.body).toContain("$0.00 + unknown (1 unpriced run) of $5 budget");
+      expect(await glmDispatcher(adapter, { OPENROUTER_API_KEY: "sk-or-test" }).tick()).toMatchObject({ status: "queued" });
+      expect(await new Ledger(db).runs(task.id)).toEqual([]);
+      const retried = (await store.events(task.id)).at(-1);
+      expect(JSON.stringify(retried?.payload)).toMatch(/no price for z-ai\/glm-5.3-flash on openrouter/);
     });
 
     it("fails without retrying when the provider's key is missing", async () => {
@@ -386,5 +382,15 @@ describe("Dispatcher", () => {
     await store.create(newTask({ budget }), "cli:test");
     expect(await dispatcher(new ScriptedAdapter([fix])).tick()).toMatchObject({ kind: "budget_exhausted" });
     expect((await store.get(first.id))?.status).toBe("done");
+  });
+
+  it("counts runs with unknown cost at their task's budget toward the monthly ceiling", async () => {
+    const task = await store.create(newTask({ budget }), "cli:test");
+    const ledger = new Ledger(db);
+    // A run whose dispatcher died before recording its cost.
+    await ledger.startRun({ taskId: task.id, role: "worker", harness: "fake", model: "m" });
+    expect(await ledger.monthSpend()).toEqual({ usd: budget.usd, unpricedRuns: 1 });
+    await new Settings(db).setMonthlyBudgetUsd(budget.usd, "admin");
+    expect(await dispatcher(new ScriptedAdapter([fix])).tick()).toEqual({ kind: "budget_exhausted", monthSpendUsd: 5, unpricedRuns: 1 });
   });
 });

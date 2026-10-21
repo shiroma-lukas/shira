@@ -8,7 +8,7 @@ import type {
   StartInput,
 } from "../contracts/adapter.js";
 import type { Reply, Usage } from "../contracts/index.js";
-import { costUsd, type PriceLookup, type TokenCounts } from "../ledger/prices.js";
+import { costUsd, type Price, type PriceLookup, type TokenCounts } from "../ledger/prices.js";
 import type { TranscriptStore } from "./transcripts.js";
 
 /** Tool ids from agent definitions, mapped to Claude Code tool names. */
@@ -97,8 +97,66 @@ interface Session {
   proc: HarnessProcess;
   input: StartInput;
   sessionId: string;
+  /** Set when the platform prices the run itself (every provider but Anthropic). */
+  price: Price | null;
   cancelled: boolean;
+  /** The adapter stopped the run at the remaining dollar budget. */
+  overBudget: boolean;
   done: Promise<RunOutcome>;
+}
+
+/** The subset of a stream-json `assistant` event the budget check reads. */
+interface AssistantEvent {
+  type: "assistant";
+  message?: {
+    id?: string;
+    content?: { type: string; text?: string; thinking?: string; input?: unknown }[];
+    usage?: {
+      input_tokens?: number;
+      output_tokens?: number;
+      cache_read_input_tokens?: number;
+      cache_creation_input_tokens?: number;
+    };
+  };
+}
+
+/** Rough tokens per character of model output, on the high side so the estimate errs toward stopping. */
+const OUTPUT_TOKENS_PER_CHAR = 1 / 3;
+
+/**
+ * Running token totals from `assistant` events, for stopping a run mid-way. Each API
+ * message can arrive as several events (one per content block) carrying the same usage,
+ * so usage is taken once per message id. Streamed usage reports output tokens as of the
+ * message's start (often 1), so output is estimated from the content instead.
+ */
+class StreamUsage {
+  private readonly messages = new Map<string, { usage: NonNullable<NonNullable<AssistantEvent["message"]>["usage"]>; chars: number }>();
+
+  add(event: AssistantEvent): void {
+    const m = event.message;
+    if (!m?.id) return;
+    const entry = this.messages.get(m.id) ?? { usage: {}, chars: 0 };
+    if (m.usage) entry.usage = m.usage;
+    for (const c of m.content ?? []) {
+      entry.chars += (c.text?.length ?? 0) + (c.thinking?.length ?? 0) + (c.input === undefined ? 0 : JSON.stringify(c.input).length);
+    }
+    this.messages.set(m.id, entry);
+  }
+
+  get empty(): boolean {
+    return this.messages.size === 0;
+  }
+
+  tokens(): TokenCounts {
+    const t = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
+    for (const { usage, chars } of this.messages.values()) {
+      t.inputTokens += usage.input_tokens ?? 0;
+      t.outputTokens += Math.max(usage.output_tokens ?? 0, Math.ceil(chars * OUTPUT_TOKENS_PER_CHAR));
+      t.cacheReadTokens += usage.cache_read_input_tokens ?? 0;
+      t.cacheWriteTokens += usage.cache_creation_input_tokens ?? 0;
+    }
+    return t;
+  }
 }
 
 /** A ref, plus where to read it when the platform attached a local copy. */
@@ -192,8 +250,9 @@ function renderResume(input: ResumeInput): string {
  * - Dollar budget: with Anthropic, `--max-budget-usd` stops the run at the task's
  *   remaining budget. Claude Code can't price other providers' models (it falls back to
  *   a Claude price, orders of magnitude off for small open models), so for them the
- *   flag is left out, the cost comes from the price table, and the dispatcher enforces
- *   dollars between runs and time during them.
+ *   flag is left out and the adapter prices the run from the price table: it watches the
+ *   streamed usage and stops the run at the remaining budget itself, and it won't start
+ *   a run for a model it has no price for (`unavailable`).
  * - Resume is by replay. Claude Code keeps session files in the sandbox, which is
  *   destroyed on pause, so a resumed run is a new session briefed with the branch,
  *   the question, and the answer.
@@ -211,6 +270,11 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
       prices?: PriceLookup;
     },
   ) {}
+
+  unavailable(provider: StartInput["provider"], model: string): string | null {
+    if (provider === "anthropic" || this.opts.prices?.(provider, model)) return null;
+    return `no price for ${model} on ${provider}, so its dollar budget can't be enforced`;
+  }
 
   async start(input: StartInput): Promise<SessionHandle> {
     return this.begin(input, renderTask(input), await repoInstructions(input));
@@ -273,7 +337,8 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
       ...(input.provider === "anthropic" ? ["--max-budget-usd", Math.max(input.remaining.usd, 0).toFixed(2)] : []),
     ];
     const proc = input.launch(argv);
-    const session: Session = { proc, input, sessionId, cancelled: false, done: undefined as never };
+    const price = input.provider === "anthropic" ? null : (this.opts.prices?.(input.provider, input.model) ?? null);
+    const session: Session = { proc, input, sessionId, price, cancelled: false, overBudget: false, done: undefined as never };
     session.done = this.collect(session);
     this.sessions.set(input.runId, session);
     return { harness: this.id, runId: input.runId, sessionRef: sessionId };
@@ -283,14 +348,21 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
     const started = Date.now();
     const lines: string[] = [];
     let result: ResultEvent | undefined;
+    const stream = new StreamUsage();
     for await (const line of s.proc.lines) {
       if (!line.trim()) continue;
       lines.push(line);
+      let event: { type?: string };
       try {
-        const event = JSON.parse(line) as { type?: string };
-        if (event.type === "result") result = event as ResultEvent;
+        event = JSON.parse(line) as { type?: string };
       } catch {
         // Non-JSON output (warnings) stays in the transcript only.
+        continue;
+      }
+      if (event.type === "result") result = event as ResultEvent;
+      if (event.type === "assistant") {
+        stream.add(event as AssistantEvent);
+        this.enforceBudget(s, stream);
       }
     }
     const { code, stderr } = await s.proc.exited;
@@ -301,16 +373,20 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
       .write(s.input.envelope.task_id, s.input.runId, lines)
       .catch((err: Error) => `unavailable: ${err.message.slice(0, 200)}`);
 
-    const tokens = tokenCounts(result);
+    // Without a result (stopped or crashed), the streamed totals are the best record of what was used.
+    const tokens = result || stream.empty ? tokenCounts(result) : stream.tokens();
     const usage: Usage = {
       model: s.input.model,
       ...tokens,
-      usd: this.cost(s.input, result, tokens),
+      usd: result || !stream.empty ? this.cost(s, result, tokens) : null,
       durationMs: result?.duration_ms ?? Date.now() - started,
     };
     const base = { usage, transcriptUri, sessionRef: result?.session_id ?? s.sessionId };
 
     if (s.cancelled) return { ...base, kind: "aborted", reason: "cancelled" };
+    if (s.overBudget) {
+      return { ...base, kind: "aborted", reason: "budget_exceeded", detail: `stopped at the remaining $${s.input.remaining.usd.toFixed(2)}` };
+    }
     if (!result) return { ...base, kind: "aborted", reason: "error", detail: `claude exited ${code} without a result: ${stderr.slice(-500)}` };
     if (result.subtype === "error_max_budget_usd") return { ...base, kind: "aborted", reason: "budget_exceeded" };
     // Claude Code can report subtype "success" with is_error true (e.g. auth failures).
@@ -322,12 +398,18 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
     return { ...base, kind: "reply", reply: await this.toReply(s, result.structured_output) };
   }
 
-  /** The run's cost, or null when unknown: no result to read it from, or no price for the model. */
-  private cost(input: StartInput, result: ResultEvent | undefined, tokens: TokenCounts): number | null {
-    if (!result) return null;
-    if (input.provider === "anthropic") return result.total_cost_usd ?? null;
-    const price = this.opts.prices?.(input.provider, input.model);
-    return price ? costUsd(price, tokens) : null;
+  /** Stops a run the platform prices once its estimated cost reaches the remaining budget. */
+  private enforceBudget(s: Session, stream: StreamUsage): void {
+    if (!s.price || s.overBudget || s.cancelled) return;
+    if (costUsd(s.price, stream.tokens()) < s.input.remaining.usd) return;
+    s.overBudget = true;
+    s.proc.kill();
+  }
+
+  /** The run's cost, or null when unknown: Anthropic without a result to read it from, or no price for the model. */
+  private cost(s: Session, result: ResultEvent | undefined, tokens: TokenCounts): number | null {
+    if (s.input.provider === "anthropic") return result?.total_cost_usd ?? null;
+    return s.price ? costUsd(s.price, tokens) : null;
   }
 
   private async toReply(s: Session, out: StructuredReply): Promise<Reply> {

@@ -116,6 +116,12 @@ export interface HarnessAdapter {
     nativeResume: boolean;
   };
 
+  /**
+   * Why this adapter can't run the model right now, or null. Checked before each run; a
+   * reason retries the task. E.g. no price for the model, so the dollar budget couldn't
+   * be enforced.
+   */
+  unavailable?(provider: Provider, model: string): string | null;
   start(input: StartInput): Promise<SessionHandle>;
   /** Mid-run message to the agent, e.g. a budget warning. */
   send(session: SessionHandle, text: string): Promise<void>;

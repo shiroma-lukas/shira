@@ -25,7 +25,7 @@ describe("Ledger", () => {
 
     expect([r1.attempt, r2.attempt]).toEqual([1, 2]);
     expect(await ledger.taskSpend(task.id)).toEqual({ usd: 1.75, unpricedRuns: 0, tokens: 1500, minutes: 1.5 });
-    expect(await ledger.monthSpendUsd()).toBe(1.75);
+    expect(await ledger.monthSpend()).toEqual({ usd: 1.75, unpricedRuns: 0 });
   });
 
   it("keeps unknown cost apart from known spend instead of counting it as zero", async () => {
