@@ -157,6 +157,27 @@ anyone else are recorded and ignored.
 
 Approvals arrive with chat intake and the concierge (M2). Until then nothing asks for one.
 
+## Review feedback
+
+When someone reviews a PR Shira opened, the worker answers it on the same PR (PRD FR-H5):
+
+1. Every minute, one dispatcher checks Shira's open PRs from the last 30 days for new
+   reviews. It uses the GitHub App, so no webhook or public endpoint is needed.
+2. A review that comments or requests changes counts if its author is in the context
+   repo's `identities.yaml` or can push to the repo (owner, member, collaborator). Anyone
+   else's review is recorded on the task and ignored. Approvals, bot reviews, and empty
+   comments need no action.
+3. The pending reviews become one follow-up task, with at most one unfinished per PR.
+   The worker gets the review text and inline comments as untrusted input, works on the
+   PR's branch, and must add commits of its own.
+4. The gate runs as usual, then pushes to the PR branch only if nobody else pushed to it
+   meanwhile (`--force-with-lease`); otherwise the task is retried from the new head.
+   Shira comments on the PR with the commit it pushed, or why it couldn't.
+
+The follow-up rebases the branch on the default branch like any task, so reviewers may see
+a force push. Plain conversation comments on the PR don't start a follow-up; submit them as
+a review.
+
 ## Repo instructions and transcripts
 
 Workers run Claude Code in `--bare` mode, which ignores the host's Claude configuration

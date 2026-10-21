@@ -21,7 +21,8 @@ import type { Sandbox, SandboxProvider } from "../sandbox/sandbox.js";
 import { scanDiff } from "../security/secrets.js";
 import { foreignClosingRefs, neutralizeForGitHub, outOfScope, wrapUntrusted } from "../security/untrusted.js";
 import { GitHubError } from "../github/app.js";
-import { parseIssueRef, prDescription, prTitle, type CodeHost, type Issue, type IssueTracker } from "./pr.js";
+import { parseIssueRef, prDescription, prTitle, type CodeHost, type Issue, type IssueTracker, type PullRequests } from "./pr.js";
+import type { ReviewFollowUp, ReviewWatcher } from "./reviews.js";
 
 export interface DispatcherDeps {
   db: Db;
@@ -32,6 +33,12 @@ export interface DispatcherDeps {
   codeHost: CodeHost;
   /** Revokes the code host credentials this process holds when the kill switch goes on (FR-S4). */
   credentials?: { revokeTokens(): Promise<number> };
+  /** Reads PRs and reviews; needed for review follow-up tasks (FR-H5). */
+  prs?: PullRequests;
+  /** Turns review feedback on Shira's PRs into follow-up tasks; polled by `run`. */
+  reviews?: ReviewWatcher;
+  /** How often `run` polls for reviews. Default 60 s. */
+  reviewPollMs?: number;
   /** Reads issues for the agent and comments on them. Without it, issue links still work but nothing is posted. */
   issues?: IssueTracker;
   /** Loads a role's instructions from the context repo by path. */
@@ -88,6 +95,16 @@ export function decisionComment(taskId: string, short: string, raw: unknown): st
   return lines.join("\n");
 }
 
+/**
+ * A review follow-up being worked on: it updates an existing PR's branch instead of
+ * opening a new PR, starting from `startSha`, which the push leases against so commits
+ * a reviewer pushed meanwhile are never overwritten.
+ */
+interface FollowUpRun {
+  note: ReviewFollowUp;
+  startSha: string;
+}
+
 /** A PR whose branch passed the gate and was pushed, waiting to be opened. */
 interface PendingPr {
   type: "pr_pending";
@@ -98,6 +115,17 @@ interface PendingPr {
   reply_id: string;
 }
 const q = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
+
+/**
+ * Pushes HEAD to the task branch. With `leaseSha` (a follow-up updating a PR branch) the
+ * push only succeeds if the remote branch is still at that commit, so a reviewer's own
+ * pushes are never overwritten; the task is retried from the new head instead.
+ */
+function pushCommand(branch: string, leaseSha?: string): string {
+  const ref = `refs/heads/${branch}`;
+  const force = leaseSha ? `--force-with-lease=${q(`${ref}:${leaseSha}`)}` : "-f";
+  return `git push --quiet ${force} origin ${q(`HEAD:${ref}`)}`;
+}
 
 /**
  * Runs one task at a time from claim to PR (M1). Many dispatchers can run side by
@@ -189,7 +217,15 @@ export class Dispatcher {
         if (r.kind !== "ran") await sleep(idleMs, undefined, { signal }).catch(() => {});
       }
     };
-    await Promise.all(Array.from({ length: concurrency }, loop));
+    const reviews = this.deps.reviews;
+    const poll = reviews
+      ? setInterval(() => void reviews.poll().catch((err) => this.log("review poll failed", { error: (err as Error).message })), this.deps.reviewPollMs ?? 60_000)
+      : undefined;
+    try {
+      await Promise.all(Array.from({ length: concurrency }, loop));
+    } finally {
+      clearInterval(poll);
+    }
   }
 
   private retry(task: Task, reason: string) {
@@ -225,11 +261,31 @@ export class Dispatcher {
     const envelope = await this.envelopeFor(task, repo);
     const checkpoint = await this.checkpoints.latest(task.id, task.repo);
     const answer = await this.pendingAnswer(task.id);
-    const branch = checkpoint?.branch ?? `shira/${task.id.slice(0, 8)}`;
+    let branch = checkpoint?.branch ?? `shira/${task.id.slice(0, 8)}`;
+    let startSha = checkpoint?.head_sha;
+
+    // A review follow-up works on its PR's branch, from the PR's current head.
+    const note = await this.followUpOf(task.id);
+    let followUp: FollowUpRun | null = null;
+    if (note) {
+      if (!this.deps.prs) return (await this.failPermanently(task, "review follow-ups need GitHub access")).status;
+      let pr;
+      try {
+        pr = await this.deps.prs.getPullRequest(note.pr.repo, note.pr.number);
+      } catch (err) {
+        const message = `reading PR #${note.pr.number} failed: ${(err as Error).message}`;
+        if (isPermanentGitHubError(err)) return (await this.failPermanently(task, message)).status;
+        return (await this.retry(task, message)).status;
+      }
+      if (pr.state !== "open") return (await this.fail(task, { reason: `PR #${pr.number} is no longer open` })).status;
+      branch = pr.head.ref;
+      startSha ??= pr.head.sha;
+      followUp = { note, startSha };
+    }
 
     let sandbox: Sandbox;
     try {
-      sandbox = await this.deps.sandboxes.create({ taskId: task.id, repo, branch, checkpointSha: checkpoint?.head_sha });
+      sandbox = await this.deps.sandboxes.create({ taskId: task.id, repo, branch, checkpointSha: startSha });
     } catch (err) {
       const message = `sandbox: ${(err as Error).message}`;
       if (PERMANENT_SANDBOX_ERROR.test(message)) return (await this.failPermanently(task, message)).status;
@@ -244,9 +300,9 @@ export class Dispatcher {
 
       let attachments;
       try {
-        attachments = await this.attach(task, sandbox);
+        attachments = followUp ? await this.attachReviews(followUp.note, sandbox) : await this.attach(task, sandbox);
       } catch (err) {
-        const message = `reading the task's issue failed: ${(err as Error).message}`;
+        const message = `reading the task's ${followUp ? "reviews" : "issue"} failed: ${(err as Error).message}`;
         if (isPermanentGitHubError(err)) return (await this.failPermanently(task, message)).status;
         return (await this.retry(task, message)).status;
       }
@@ -288,7 +344,7 @@ export class Dispatcher {
         }
         return (await this.retry(task, `${outcome.reason}: ${outcome.detail ?? "no detail"}`)).status;
       }
-      return await this.settle(task, envelope, repo, agent, adapter, sandbox, run, outcome);
+      return await this.settle(task, envelope, repo, agent, adapter, sandbox, run, outcome, followUp);
     } finally {
       await sandbox.destroy().catch((err) => this.log("sandbox destroy failed", { error: (err as Error).message }));
     }
@@ -363,6 +419,7 @@ export class Dispatcher {
     sandbox: Sandbox,
     run: { id: string; attempt: number },
     outcome: Extract<RunOutcome, { kind: "reply" }>,
+    followUp: FollowUpRun | null = null,
   ): Promise<TaskStatus> {
     const parsed = Reply.safeParse(outcome.reply);
     const problem = !parsed.success
@@ -383,9 +440,9 @@ export class Dispatcher {
         return (await this.fail(task, { reason: "agent reported failure", summary: reply.summary, reply_id: reply.id })).status;
       case "needs_decision":
       case "blocked":
-        return this.pause(task, reply, adapter, sandbox, run, outcome);
+        return this.pause(task, reply, adapter, sandbox, run, outcome, followUp);
       case "done":
-        return this.gateAndOpenPr(task, reply, repo, sandbox, run);
+        return this.gateAndOpenPr(task, reply, repo, sandbox, run, followUp);
     }
   }
 
@@ -397,10 +454,11 @@ export class Dispatcher {
     sandbox: Sandbox,
     run: { id: string },
     outcome: RunOutcome,
+    followUp: FollowUpRun | null = null,
   ): Promise<TaskStatus> {
     const branch = sandbox.workspace.branch;
     const saved = await sandbox.exec(
-      `git add -A && (git diff --cached --quiet || git commit --quiet -m "shira: checkpoint") && git push --quiet -f origin HEAD:refs/heads/${q(branch)}`,
+      `git add -A && (git diff --cached --quiet || git commit --quiet -m "shira: checkpoint") && ${pushCommand(branch, followUp?.startSha)}`,
       { auth: "write" },
     );
     if (saved.code !== 0) return (await this.retry(task, `checkpoint push failed: ${tail(saved.stderr, 500)}`)).status;
@@ -434,6 +492,7 @@ export class Dispatcher {
     repo: RepoConfig,
     sandbox: Sandbox,
     run: { attempt: number },
+    followUp: FollowUpRun | null = null,
   ): Promise<TaskStatus> {
     const base = repo.defaultBranch;
     const branch = sandbox.workspace.branch;
@@ -448,8 +507,10 @@ export class Dispatcher {
     }
 
     await sandbox.exec(`git fetch --quiet origin ${q(base)}`, { auth: "read" });
-    if ((await git(`git rev-list --count ${q(`origin/${base}`)}..HEAD`)).stdout.trim() === "0") {
-      return (await this.fail(task, { reason: "no changes to propose", reply_id: reply.id })).status;
+    // A follow-up's branch already differs from base: it must add commits of its own.
+    const since = followUp ? followUp.startSha : `origin/${base}`;
+    if ((await git(`git rev-list --count ${q(since)}..HEAD`)).stdout.trim() === "0") {
+      return (await this.fail(task, { reason: "no changes to propose", summary: reply.summary, reply_id: reply.id })).status;
     }
     const rebase = await git(`git rebase --quiet ${q(`origin/${base}`)}`);
     if (rebase.code !== 0) {
@@ -482,7 +543,9 @@ export class Dispatcher {
       return (await this.fail(task, { reason: "changes outside the task's scope", paths: outside.slice(0, 50), scope: task.scope.paths })).status;
     }
     // GitHub acts on closing keywords in commit messages at merge: only the task's own issue may be named.
-    const issueRef = this.issueOf(task);
+    // A follow-up's branch carries the original task's commits, which may close its issue.
+    const owner = followUp && task.parentId ? await this.store.get(task.parentId) : task;
+    const issueRef = owner ? this.issueOf(owner) : null;
     const messages = (await git(`git log --format=%B ${q(`origin/${base}`)}..HEAD`)).stdout;
     const refs = foreignClosingRefs(messages, issueRef?.repo === task.repo ? issueRef.number : undefined);
     if (refs.length) {
@@ -491,8 +554,21 @@ export class Dispatcher {
     const diffStat = (await git(`git diff --stat ${range}`)).stdout;
 
     if (await this.settings.agentsPaused()) return (await this.pauseForKill(task, "before push")).status;
-    const push = await sandbox.exec(`git push --quiet -f origin HEAD:refs/heads/${q(branch)}`, { auth: "write" });
+    const push = await sandbox.exec(pushCommand(branch, followUp?.startSha), { auth: "write" });
     if (push.code !== 0) return (await this.retry(task, `push failed: ${tail(push.stderr, 500)}`)).status;
+
+    if (followUp) {
+      // The PR exists; the push updated it. Done, and the PR gets a comment (notifyIssue).
+      const pushed = (await git("git rev-parse HEAD")).stdout.trim();
+      const pr = { repo: followUp.note.pr.repo, number: followUp.note.pr.number };
+      return (
+        await this.store.transition(task.id, "done", {
+          actor: this.deps.owner,
+          from: "running",
+          payload: { followup: { pr, pushed, review_ids: followUp.note.review_ids }, reply_id: reply.id },
+        })
+      ).status;
+    }
 
     const spend = await this.ledger.taskSpend(task.id);
     const issue = this.issueOf(task);
@@ -556,6 +632,43 @@ export class Dispatcher {
     return rows[0]?.payload ?? null;
   }
 
+  /** The review follow-up note a task was created with, if it is one. */
+  private async followUpOf(taskId: string): Promise<ReviewFollowUp | null> {
+    const { rows } = await this.deps.db.query<{ payload: ReviewFollowUp }>(
+      `SELECT payload FROM task_events
+       WHERE task_id = $1 AND kind = 'note' AND payload->>'type' = 'review_followup'
+       ORDER BY id LIMIT 1`,
+      [taskId],
+    );
+    return rows[0]?.payload ?? null;
+  }
+
+  /**
+   * Writes the reviews a follow-up answers into the sandbox, marked untrusted (FR-S5):
+   * a review can quote anything, and only the task's scope and budget bind the agent.
+   */
+  private async attachReviews(note: ReviewFollowUp, sandbox: Sandbox) {
+    const prs = this.deps.prs!;
+    const { repo, number } = note.pr;
+    const reviews = (await prs.listReviews(repo, number)).filter((r) => note.review_ids.includes(r.id));
+    const sections: string[] = [];
+    for (const r of reviews) {
+      const comments = await prs.reviewComments(repo, number, r.id);
+      const parts = [
+        wrapUntrusted(
+          { source: `review ${r.id} on PR ${repo}#${number} (${r.state.toLowerCase().replace("_", " ")})`, author: `@${r.author} (${r.association})`, url: r.url },
+          [
+            r.body.trim() || "(no summary)",
+            ...comments.map((c) => `\n## ${c.path}${c.line ? `:${c.line}` : ""}\n\n\`\`\`diff\n${c.diffHunk}\n\`\`\`\n\n${c.body}`),
+          ].join("\n"),
+        ),
+      ];
+      sections.push(...parts);
+    }
+    const path = await sandbox.writeFile(`pr-${number}-reviews.md`, sections.join("\n"));
+    return [{ ref: { kind: "pr" as const, repo, number }, path, untrusted: true }];
+  }
+
   /** The issue a task resolves, when it came from one. */
   private issueOf(task: Task): { repo: string; number: number } | null {
     const ref = task.threadRef;
@@ -578,23 +691,33 @@ export class Dispatcher {
     return [{ ref: task.threadRef, path, untrusted: true }];
   }
 
-  /** Tells the issue what happened: the PR, the question that needs answering, or why the task failed. */
+  /**
+   * Tells the issue (or, for a review follow-up, the PR) what happened: the PR or the push,
+   * the question that needs answering, or why the task failed.
+   */
   private async notifyIssue(task: Task, status: TaskStatus): Promise<void> {
-    const ref = this.issueOf(task);
+    const followUp = await this.followUpOf(task.id);
+    const ref = followUp ? followUp.pr : this.issueOf(task);
     if (!ref || !this.deps.issues || !["done", "failed", "needs_decision"].includes(status)) return;
     const last = (await this.store.events(task.id)).findLast((e) => e.kind === "state_change");
     const spend = await this.ledger.taskSpend(task.id);
     const cost = `$${spend.usd.toFixed(2)}, ${spend.tokens.toLocaleString("en-US")} tokens`;
     const short = `task \`${task.id.slice(0, 8)}\``;
+    const reviewers = followUp?.reviewers.map((r) => `@${r}`).join(", ");
     let body: string;
-    if (status === "done") {
+    if (status === "done" && followUp) {
+      const pushed = String((last?.payload.followup as { pushed?: string } | undefined)?.pushed ?? "").slice(0, 7);
+      body = `Pushed \`${pushed}\` addressing the review from ${reviewers} (${short}, ${cost}).`;
+    } else if (status === "done") {
       body = `Opened #${(last?.payload.pr as { number: number }).number} to fix this (${short}, ${cost}).`;
     } else if (status === "needs_decision") {
       body = decisionComment(task.id, short, last?.payload.question);
     } else {
       // Reasons can quote test output or agent text.
       const reason = neutralizeForGitHub(String(last?.payload.reason ?? "unknown reason").slice(0, 500));
-      body = `Shira couldn't complete this (${short}, ${cost}):\n\n> ${reason}`;
+      const what = followUp ? `address the review from ${reviewers}` : "complete this";
+      const summary = last?.payload.summary ? `\n\nThe agent said:\n\n> ${neutralizeForGitHub(String(last.payload.summary).slice(0, 500))}` : "";
+      body = `Shira couldn't ${what} (${short}, ${cost}):\n\n> ${reason}${summary}`;
     }
     await this.deps.issues.comment(ref.repo, ref.number, body);
   }
