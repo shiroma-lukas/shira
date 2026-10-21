@@ -58,6 +58,7 @@ describe("Dispatcher", () => {
     host = new FakeCodeHost();
   });
 
+  let revocations = 0;
   const dispatcher = (adapter: ScriptedAdapter | ClaudeCodeAdapter, leaseMs = 60_000) =>
     new Dispatcher({
       db,
@@ -65,11 +66,80 @@ describe("Dispatcher", () => {
       adapters: new Map([["fake", adapter]]),
       sandboxes: new LocalSandboxProvider({ unsafeNoIsolation: true, cloneUrl: () => origin }),
       codeHost: host,
+      credentials: { revokeTokens: async () => ++revocations },
       instructions: async () => "be a worker",
       owner: "dispatcher-test",
       leaseMs,
+      killPollMs: 50,
       log: () => {},
     });
+
+  describe("kill switch", () => {
+    const settings = () => new Settings(db);
+    const lastPayload = async (id: string) => (await store.events(id)).at(-1)?.payload;
+
+    it("stops a running task and pauses it without using a retry", async () => {
+      const task = await store.create(newTask({ budget }), "cli:test");
+      const hang: Step = async ({ exec, cancelled }) => {
+        await exec("echo half > app.txt && git commit --quiet -am wip");
+        await settings().setAgentsPaused(true, "cli:test");
+        await cancelled;
+        return { status: "failed", summary: "unreachable" };
+      };
+      expect(await dispatcher(new ScriptedAdapter([hang])).tick()).toMatchObject({ status: "paused" });
+      expect(await lastPayload(task.id)).toEqual({ reason: "kill switch", stage: "during the run" });
+      expect((await store.get(task.id))!.retriesUsed).toBe(0);
+      const runs = await db.query("SELECT outcome FROM runs WHERE task_id = $1", [task.id]);
+      expect(runs.rows).toEqual([{ outcome: "cancelled" }]);
+      expect(await originBranches(origin)).toEqual(["main"]);
+      expect(host.prs).toHaveLength(0);
+    });
+
+    it("pushes nothing when the switch goes on as the agent finishes", async () => {
+      const task = await store.create(newTask({ budget }), "cli:test");
+      const finishThenKill: Step = async (input) => {
+        const reply = await fix(input);
+        await settings().setAgentsPaused(true, "cli:test");
+        return reply;
+      };
+      expect(await dispatcher(new ScriptedAdapter([finishThenKill])).tick()).toMatchObject({ status: "paused" });
+      expect(await lastPayload(task.id)).toEqual({ reason: "kill switch", stage: "before push" });
+      expect(await originBranches(origin)).toEqual(["main"]);
+    });
+
+    it("claims nothing and revokes credentials once per kill; resume requeues", async () => {
+      const task = await store.create(newTask({ budget }), "cli:test");
+      await settings().setAgentsPaused(true, "cli:test");
+      const d = dispatcher(new ScriptedAdapter([fix]));
+      expect(await d.tick()).toEqual({ kind: "killed" });
+      expect(await d.tick()).toEqual({ kind: "killed" });
+      expect(revocations).toBe(1);
+      expect((await store.get(task.id))!.status).toBe("queued");
+
+      await settings().setAgentsPaused(false, "cli:test");
+      expect(await d.tick()).toMatchObject({ status: "done" });
+      await settings().setAgentsPaused(true, "cli:test");
+      await d.tick();
+      expect(revocations).toBe(2);
+    });
+
+    it("lists the tasks it paused, and resume runs them again", async () => {
+      const task = await store.create(newTask({ budget }), "cli:test");
+      const hang: Step = async ({ cancelled }) => {
+        await settings().setAgentsPaused(true, "cli:test");
+        await cancelled;
+        return { status: "failed", summary: "unreachable" };
+      };
+      const d = dispatcher(new ScriptedAdapter([hang, fix]));
+      await d.tick();
+      expect((await store.pausedByKill()).map((t) => t.id)).toEqual([task.id]);
+
+      await settings().setAgentsPaused(false, "cli:test");
+      await store.transition(task.id, "queued", { actor: "cli:test", from: ["paused", "blocked"] }); // shira resume
+      expect(await store.pausedByKill()).toEqual([]);
+      expect(await d.tick()).toMatchObject({ taskId: task.id, status: "done" });
+    });
+  });
 
   it("takes a task from claim to an open PR", async () => {
     const task = await store.create(newTask({ budget }), "cli:test");

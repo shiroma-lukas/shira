@@ -191,6 +191,18 @@ export class TaskStore {
     return rows.map(toTask);
   }
 
+  /** Tasks the kill switch paused that are still paused, oldest first. */
+  async pausedByKill(): Promise<Task[]> {
+    const { rows } = await this.db.query<Row>(
+      `SELECT ${TASK_COLUMNS.split(",").map((c) => `t.${c.trim()}`).join(", ")} FROM tasks t
+       WHERE t.status = 'paused'
+         AND (SELECT e.payload->>'reason' FROM task_events e
+              WHERE e.task_id = t.id AND e.kind = 'state_change' ORDER BY e.id DESC LIMIT 1) = 'kill switch'
+       ORDER BY t.created_at`,
+    );
+    return rows.map(toTask);
+  }
+
   async events(taskId: string): Promise<TaskEvent[]> {
     const { rows } = await this.db.query<Row>("SELECT * FROM task_events WHERE task_id = $1 ORDER BY id", [taskId]);
     return rows.map(toEvent);

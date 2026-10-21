@@ -30,7 +30,8 @@ const USAGE = `usage: shira <command> [options]
   answer <task-id> --text <text>            answer a task's open question; it resumes
          [--choice <n>]
   resume <task-id>                          requeue a paused or blocked task
-  kill on|off|status                        pause or resume all agents
+  kill on|off|status                        kill switch: stop and pause running tasks, claim nothing,
+                                            revoke GitHub tokens; off lists the tasks it paused
   budget monthly <usd>|none                 set the monthly org spend ceiling
   dispatch                                  run tasks in gVisor sandboxes (needs the egress proxy:
                                             docker compose --profile sandbox up)
@@ -171,7 +172,17 @@ async function main(db: Db, argv: string[]): Promise<void> {
       const mode = rest[0];
       if (mode === "on" || mode === "off") await settings.setAgentsPaused(mode === "on", actor);
       else if (mode !== "status") fail("kill needs on, off, or status");
-      console.log((await settings.agentsPaused()) ? "agents paused: no new tasks will be claimed" : "agents running");
+      const paused = await store.pausedByKill();
+      if (await settings.agentsPaused()) {
+        console.log("agents paused: no task is claimed, running tasks stop within seconds and pause,");
+        console.log("and each dispatcher revokes its GitHub tokens");
+      } else {
+        console.log("agents running");
+      }
+      if (paused.length) {
+        console.log(`\npaused by the kill switch (requeue each with \`shira resume <task-id>\`):`);
+        for (const t of paused) console.log(`  ${line(t)}`);
+      }
       return;
     }
     case "budget": {
