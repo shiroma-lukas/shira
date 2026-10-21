@@ -38,6 +38,7 @@ describe("ClaudeCodeAdapter", () => {
       workspace: sandbox.workspace,
       launch: sandbox.launch,
       model: "claude-sonnet-5-5",
+      provider: "anthropic",
       instructions: "You are a worker.",
       tools: ["read", "edit", "shell"],
       remaining: { usd: 2.5 },
@@ -173,6 +174,45 @@ describe("ClaudeCodeAdapter", () => {
     expect(outcome.kind).toBe("reply");
     expect(outcome.usage.usd).toBe(0.42);
     expect(outcome.transcriptUri).toBe("unavailable: AccessDenied");
+  });
+
+  describe("through OpenRouter", () => {
+    const glm = () => ({ ...input, model: "z-ai/glm-5.3-flash", provider: "openrouter" as const });
+
+    it("leaves out --max-budget-usd, which Claude Code can't price for other models", async () => {
+      await run("unknown_model", glm());
+      const args = await lastArgs();
+      expect(args).not.toContain("--max-budget-usd");
+      expect(args[args.indexOf("--model") + 1]).toBe("z-ai/glm-5.3-flash");
+    });
+
+    it("prices the run from the price table and per-model token totals, ignoring Claude Code's guess", async () => {
+      const priced = new ClaudeCodeAdapter({
+        transcripts: new FileTranscriptStore(await mkdtemp(join(tmpdir(), "shira-cc-"))),
+        binary,
+        prices: (provider, model) =>
+          provider === "openrouter" && model === "z-ai/glm-5.3-flash" ? { input: 1e-7, output: 2e-7, cacheRead: 1e-8 } : null,
+      });
+      process.env.FAKE_CLAUDE_SCENARIO = "unknown_model";
+      const outcome = await priced.result(await priced.start(glm()));
+      expect(outcome.kind).toBe("reply");
+      expect(outcome.usage).toMatchObject({ inputTokens: 1_000_000, outputTokens: 200_000, cacheReadTokens: 500_000, cacheWriteTokens: 0 });
+      expect(outcome.usage.usd).toBeCloseTo(0.1 + 0.04 + 0.005);
+    });
+
+    it("records the cost as unknown when the model has no price", async () => {
+      const outcome = await run("unknown_model", glm());
+      expect(outcome.usage.usd).toBeNull();
+      expect(outcome.usage.inputTokens).toBe(1_000_000);
+    });
+
+    it("fails at once when OpenRouter is out of credits", async () => {
+      expect(await run("no_credits", glm())).toMatchObject({ kind: "aborted", reason: "config_error" });
+    });
+  });
+
+  it("records the cost as unknown when the run ends without a result", async () => {
+    expect((await run("crash")).usage.usd).toBeNull();
   });
 
   it("stores a redacted transcript", async () => {

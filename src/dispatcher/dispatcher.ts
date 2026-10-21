@@ -7,17 +7,18 @@ import {
   Question,
   Reply,
   type AgentDefinition,
+  type ModelChoice,
   type Ref,
   type RepoConfig,
   type TaskStatus,
 } from "../contracts/index.js";
 import type { LoadedConfig } from "../config/load.js";
 import type { Db } from "../db/client.js";
-import { exceededBudget, Ledger } from "../ledger/ledger.js";
+import { exceededBudget, formatUsd, Ledger } from "../ledger/ledger.js";
 import { CheckpointStore } from "../queue/checkpoints.js";
 import { Settings } from "../queue/settings.js";
 import { TaskStore, type Task } from "../queue/store.js";
-import type { Sandbox, SandboxProvider } from "../sandbox/sandbox.js";
+import type { HarnessAccess, Sandbox, SandboxProvider } from "../sandbox/sandbox.js";
 import { scanDiff } from "../security/secrets.js";
 import { GitHubError } from "../github/app.js";
 import { parseIssueRef, prDescription, prTitle, type CodeHost, type Issue, type IssueTracker } from "./pr.js";
@@ -28,6 +29,12 @@ export interface DispatcherDeps {
   /** Keyed by adapter id, matched against `model.primary.harness` in agent definitions. */
   adapters: ReadonlyMap<string, HarnessAdapter>;
   sandboxes: SandboxProvider;
+  /**
+   * The model provider's credential and egress for an agent's model choice. Throws when
+   * it can't be provided (e.g. a missing key), which fails the task without retrying.
+   * Without it, sandboxes get no provider access (tests).
+   */
+  harnessAccess?: (choice: ModelChoice) => HarnessAccess;
   codeHost: CodeHost;
   /** Reads issues for the agent and comments on them. Without it, issue links still work but nothing is posted. */
   issues?: IssueTracker;
@@ -50,7 +57,7 @@ const ZERO_USAGE = (model: string) => ({
   outputTokens: 0,
   cacheReadTokens: 0,
   cacheWriteTokens: 0,
-  usd: 0,
+  usd: null,
   durationMs: 0,
 });
 
@@ -197,9 +204,16 @@ export class Dispatcher {
     const answer = await this.pendingAnswer(task.id);
     const branch = checkpoint?.branch ?? `shira/${task.id.slice(0, 8)}`;
 
+    let harness: HarnessAccess | undefined;
+    try {
+      harness = this.deps.harnessAccess?.(agent.model.primary);
+    } catch (err) {
+      return (await this.failPermanently(task, `model provider: ${(err as Error).message}`)).status;
+    }
+
     let sandbox: Sandbox;
     try {
-      sandbox = await this.deps.sandboxes.create({ taskId: task.id, repo, branch, checkpointSha: checkpoint?.head_sha });
+      sandbox = await this.deps.sandboxes.create({ taskId: task.id, repo, branch, checkpointSha: checkpoint?.head_sha, harness });
     } catch (err) {
       const message = `sandbox: ${(err as Error).message}`;
       if (PERMANENT_SANDBOX_ERROR.test(message)) return (await this.failPermanently(task, message)).status;
@@ -221,7 +235,7 @@ export class Dispatcher {
         return (await this.retry(task, message)).status;
       }
 
-      const model = agent.model.primary.model;
+      const { model, provider } = agent.model.primary;
       const run = await this.ledger.startRun({ taskId: task.id, role: task.role, harness: adapter.id, model });
       const input = {
         runId: run.id,
@@ -229,6 +243,7 @@ export class Dispatcher {
         workspace: sandbox.workspace,
         launch: sandbox.launch,
         model,
+        provider,
         instructions: await this.deps.instructions(agent.instructions),
         tools: agent.tools,
         remaining: { usd: task.budget.usd - spend.usd },
@@ -508,7 +523,7 @@ export class Dispatcher {
     if (!ref || !this.deps.issues || !["done", "failed", "needs_decision"].includes(status)) return;
     const last = (await this.store.events(task.id)).findLast((e) => e.kind === "state_change");
     const spend = await this.ledger.taskSpend(task.id);
-    const cost = `$${spend.usd.toFixed(2)}, ${spend.tokens.toLocaleString("en-US")} tokens`;
+    const cost = `${formatUsd(spend)}, ${spend.tokens.toLocaleString("en-US")} tokens`;
     const short = `task \`${task.id.slice(0, 8)}\``;
     let body: string;
     if (status === "done") {

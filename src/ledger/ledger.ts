@@ -3,7 +3,9 @@ import type { RunOutcome } from "../contracts/adapter.js";
 import type { SqlClient } from "../db/migrate.js";
 
 export interface Spend {
+  /** Known cost only. Runs with an unknown cost are counted in `unpricedRuns`, not as zero. */
   usd: number;
+  unpricedRuns: number;
   /** All billed tokens: input, output, cache reads, and cache writes. */
   tokens: number;
   minutes: number;
@@ -11,8 +13,15 @@ export interface Spend {
 
 export type BudgetDimension = "usd" | "tokens" | "minutes";
 
+/** "$1.23", or "$1.23 + unknown (2 unpriced runs)" when some runs have no known cost. */
+export function formatUsd(spend: Pick<Spend, "usd" | "unpricedRuns">): string {
+  const known = `$${spend.usd.toFixed(2)}`;
+  if (!spend.unpricedRuns) return known;
+  return `${known} + unknown (${spend.unpricedRuns} unpriced run${spend.unpricedRuns === 1 ? "" : "s"})`;
+}
+
 /** Returns the first budget dimension that spend has reached, or null if within budget (FR-K2). */
-export function exceededBudget(budget: Budget, spend: Spend): BudgetDimension | null {
+export function exceededBudget(budget: Budget, spend: Pick<Spend, "usd" | "tokens" | "minutes">): BudgetDimension | null {
   if (spend.usd >= budget.usd) return "usd";
   if (spend.tokens >= budget.tokens) return "tokens";
   if (spend.minutes >= budget.minutes) return "minutes";
@@ -57,15 +66,16 @@ export class Ledger {
 
   /** Total spend across every run of a task, including runs before a pause. */
   async taskSpend(taskId: string): Promise<Spend> {
-    const { rows } = await this.db.query<{ usd: string; tokens: string; ms: string }>(
+    const { rows } = await this.db.query<{ usd: string; unpriced: string; tokens: string; ms: string }>(
       `SELECT coalesce(sum(usd), 0) AS usd,
+              count(*) FILTER (WHERE usd IS NULL) AS unpriced,
               coalesce(sum(input_tokens + output_tokens + cache_read_tokens + cache_write_tokens), 0) AS tokens,
               coalesce(sum(duration_ms), 0) AS ms
        FROM runs WHERE task_id = $1`,
       [taskId],
     );
     const r = rows[0]!;
-    return { usd: Number(r.usd), tokens: Number(r.tokens), minutes: Number(r.ms) / 60_000 };
+    return { usd: Number(r.usd), unpricedRuns: Number(r.unpriced), tokens: Number(r.tokens), minutes: Number(r.ms) / 60_000 };
   }
 
   /** Spend since the start of the current calendar month (UTC). */

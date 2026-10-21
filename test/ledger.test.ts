@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { RunOutcome } from "../src/contracts/adapter.js";
-import { exceededBudget, Ledger } from "../src/ledger/ledger.js";
+import { exceededBudget, formatUsd, Ledger } from "../src/ledger/ledger.js";
 import { TaskStore } from "../src/queue/store.js";
 import { newTask, testDb } from "./helpers.js";
 
-const outcome = (usd: number, tokens: number, durationMs: number): RunOutcome => ({
+const outcome = (usd: number | null, tokens: number, durationMs: number): RunOutcome => ({
   kind: "aborted",
   reason: "error",
   transcriptUri: "file:///t",
@@ -24,8 +24,24 @@ describe("Ledger", () => {
     await ledger.finishRun(r2.id, outcome(0.5, 500, 30_000));
 
     expect([r1.attempt, r2.attempt]).toEqual([1, 2]);
-    expect(await ledger.taskSpend(task.id)).toEqual({ usd: 1.75, tokens: 1500, minutes: 1.5 });
+    expect(await ledger.taskSpend(task.id)).toEqual({ usd: 1.75, unpricedRuns: 0, tokens: 1500, minutes: 1.5 });
     expect(await ledger.monthSpendUsd()).toBe(1.75);
+  });
+
+  it("keeps unknown cost apart from known spend instead of counting it as zero", async () => {
+    const db = await testDb();
+    const task = await new TaskStore(db).create(newTask(), "a");
+    const ledger = new Ledger(db);
+    for (const usd of [0.25, null, null]) {
+      const r = await ledger.startRun({ taskId: task.id, role: "worker", harness: "fake", model: "m" });
+      await ledger.finishRun(r.id, outcome(usd, 100, 60_000));
+    }
+    const spend = await ledger.taskSpend(task.id);
+    expect(spend).toEqual({ usd: 0.25, unpricedRuns: 2, tokens: 300, minutes: 3 });
+    expect(formatUsd(spend)).toBe("$0.25 + unknown (2 unpriced runs)");
+    expect(formatUsd({ usd: 1, unpricedRuns: 0 })).toBe("$1.00");
+    const { rows } = await db.query<{ usd: string | null }>("SELECT usd FROM runs WHERE usd IS NULL");
+    expect(rows).toHaveLength(2);
   });
 
   it("does not overwrite a finished run", async () => {

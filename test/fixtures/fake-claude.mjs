@@ -6,6 +6,11 @@ import { appendFileSync } from "node:fs";
 
 const scenario = process.env.FAKE_CLAUDE_SCENARIO ?? "done";
 if (process.env.FAKE_CLAUDE_ARGS_FILE) appendFileSync(process.env.FAKE_CLAUDE_ARGS_FILE, JSON.stringify(process.argv.slice(2)) + "\n");
+// The provider wiring the sandbox handed the harness, for assertions.
+if (process.env.FAKE_CLAUDE_ENV_FILE) {
+  const keys = ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_DEFAULT_HAIKU_MODEL"];
+  appendFileSync(process.env.FAKE_CLAUDE_ENV_FILE, JSON.stringify(Object.fromEntries(keys.map((k) => [k, process.env[k] ?? null]))) + "\n");
+}
 const arg = (name) => process.argv[process.argv.indexOf(name) + 1];
 const session_id = arg("--session-id");
 const emit = (e) => process.stdout.write(JSON.stringify({ session_id, ...e }) + "\n");
@@ -23,6 +28,22 @@ switch (scenario) {
   case "ask":
     execSync("echo half > notes.txt");
     result({ structured_output: { status: "needs_decision", summary: "Need a choice.", question: { kind: "technical", text: "A or B?", options: ["A", "B"] } } });
+    break;
+  case "unknown_model":
+    // What Claude Code reports for a model it has no price for: a guessed Claude price,
+    // zeroed top-level usage, and the real token counts per model.
+    execSync("echo fixed > app.txt && git commit --quiet -am 'fix app'");
+    result({
+      total_cost_usd: 24,
+      usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      modelUsage: {
+        [arg("--model")]: { inputTokens: 1_000_000, outputTokens: 200_000, cacheReadInputTokens: 500_000, cacheCreationInputTokens: 0, costUSD: 24, costBasis: "unknown" },
+      },
+      structured_output: { status: "done", summary: "Fixed app.txt." },
+    });
+    break;
+  case "no_credits":
+    result({ is_error: true, api_error_status: 402, result: "API Error: 402 Insufficient credits", total_cost_usd: 0 });
     break;
   case "auth_error":
     result({ is_error: true, result: "Not logged in · Please run /login", total_cost_usd: 0 });

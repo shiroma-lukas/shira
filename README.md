@@ -18,14 +18,15 @@ out is a per-sandbox egress allowlist ([self-hosting](docs/self-hosting.md)).
 | `docs/contracts.md` | How agents hand off work and how paused tasks resume |
 | `docs/github-app.md` | Creating and installing the GitHub App |
 | `docs/self-hosting.md` | Running Shira on one Linux machine with gVisor |
+| `docs/providers.md` | Model providers (Anthropic, OpenRouter): credentials, egress, cost |
 | `src/contracts/` | Wire contracts (Zod): envelope, reply, statuses, adapter interface, agent and repo config, permissions |
 | `src/config/` | Loads and validates `config/` (`pnpm validate-config`) |
 | `src/db/` | Postgres client wrappers and migration runner |
 | `src/queue/` | Task store (queue, leases, retries, audit events), routing rules, intake, platform settings |
-| `src/ledger/` | Cost ledger and budget checks |
+| `src/ledger/` | Cost ledger, budget checks, and model price tables |
 | `src/dispatcher/` | Claim-to-PR loop and the standard PR description |
 | `src/github/` | GitHub App: scoped installation tokens, git credentials, PRs |
-| `src/harness/` | Claude Code adapter and transcript storage |
+| `src/harness/` | Claude Code adapter, model provider wiring, and transcript storage |
 | `src/sandbox/` | Sandbox interface, the Docker/gVisor provider, and a local dev-only provider (no isolation) |
 | `src/egress/` | Egress proxy: per-sandbox allowlists, no private addresses |
 | `images/` | Worker base image and egress proxy image |

@@ -4,10 +4,20 @@ import { lintPermissions, Permission } from "./permissions.js";
 
 export const API_VERSION = "shira/v1" as const;
 
-const ModelChoice = z.object({
+/**
+ * Who serves the tokens. The harness talks to the provider; the platform supplies its
+ * credential and opens egress to it only for agents that use it.
+ */
+export const Provider = z.enum(["anthropic", "openrouter"]);
+export type Provider = z.infer<typeof Provider>;
+
+export const ModelChoice = z.object({
   harness: z.string().min(1),
+  /** Model id as the provider names it, e.g. `claude-sonnet-5-5` or `z-ai/glm-5.3-flash`. */
   model: z.string().min(1),
+  provider: Provider.default("anthropic"),
 });
+export type ModelChoice = z.infer<typeof ModelChoice>;
 
 /**
  * Declarative agent definition, stored as YAML in version control (FR-A1).

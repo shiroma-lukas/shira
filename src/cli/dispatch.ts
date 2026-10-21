@@ -6,6 +6,8 @@ import type { Db } from "../db/client.js";
 import { Dispatcher } from "../dispatcher/dispatcher.js";
 import { GitHubApp } from "../github/app.js";
 import { ClaudeCodeAdapter } from "../harness/claude-code.js";
+import { harnessAccessFromEnv } from "../harness/providers.js";
+import { OpenRouterPriceTable } from "../ledger/prices.js";
 import { transcriptStoreFromEnv } from "../harness/transcripts.js";
 import { EgressAdminClient } from "../egress/proxy.js";
 import { DockerSandboxProvider } from "../sandbox/docker.js";
@@ -30,7 +32,7 @@ function contextLoader(dir: string) {
 
 export type SandboxMode = { kind: "docker"; unsafeRuntime: boolean } | { kind: "local-unsafe" };
 
-function sandboxes(mode: SandboxMode, github: GitHubApp, apiKey: string): SandboxProvider {
+function sandboxes(mode: SandboxMode, github: GitHubApp): SandboxProvider {
   if (mode.kind === "local-unsafe") return new LocalSandboxProvider({ unsafeNoIsolation: true, credentials: github });
   const runtime = process.env.SHIRA_SANDBOX_RUNTIME ?? "runsc";
   if (runtime !== "runsc" && !mode.unsafeRuntime) {
@@ -42,7 +44,6 @@ function sandboxes(mode: SandboxMode, github: GitHubApp, apiKey: string): Sandbo
     proxyUrl: process.env.SHIRA_EGRESS_PROXY_URL ?? "http://shira-egress:3128",
     egress: new EgressAdminClient(process.env.SHIRA_EGRESS_ADMIN_URL ?? "http://127.0.0.1:8080", required("SHIRA_EGRESS_ADMIN_TOKEN")),
     credentials: github,
-    harnessEnv: { ANTHROPIC_API_KEY: apiKey },
   });
 }
 
@@ -62,20 +63,38 @@ export async function runDispatcher(
   concurrency = 1,
 ): Promise<void> {
   const github = await githubFromEnv();
-  const apiKey = required("ANTHROPIC_API_KEY"); // Claude Code runs with --bare, which ignores interactive logins.
+  const log = (m: string, f?: Record<string, unknown>) => console.log(new Date().toISOString(), m, f ? JSON.stringify(f) : "");
+
+  // Fail at startup, not per task, when a configured agent's provider has no credential.
+  // Claude Code runs with --bare, which ignores interactive logins.
+  const harnessAccess = harnessAccessFromEnv(process.env);
+  for (const agent of config.agents) harnessAccess(agent.model.primary);
+
+  const openRouterPrices = new OpenRouterPriceTable({ onError: (err) => log("price refresh failed", { error: err.message }) });
+  if (config.agents.some((a) => a.model.primary.provider === "openrouter")) {
+    // Without prices, runs are still recorded, with an unknown cost.
+    await openRouterPrices.refresh().catch((err: Error) => log("price refresh failed", { error: err.message }));
+  }
 
   const dispatcher = new Dispatcher({
     db,
     config,
     adapters: new Map([
-      ["claude-code", new ClaudeCodeAdapter({ transcripts: transcriptStoreFromEnv(process.env) })],
+      [
+        "claude-code",
+        new ClaudeCodeAdapter({
+          transcripts: transcriptStoreFromEnv(process.env),
+          prices: (provider, model) => (provider === "openrouter" ? openRouterPrices.lookup(model) : null),
+        }),
+      ],
     ]),
-    sandboxes: sandboxes(mode, github, apiKey),
+    sandboxes: sandboxes(mode, github),
+    harnessAccess,
     codeHost: github,
     issues: github,
     instructions: contextLoader(process.env.SHIRA_CONTEXT_DIR ?? "context-template"),
     owner: `dispatcher-${hostname()}-${process.pid}`,
-    log: (m, f) => console.log(new Date().toISOString(), m, f ? JSON.stringify(f) : ""),
+    log,
   });
   console.log(
     mode.kind === "local-unsafe"

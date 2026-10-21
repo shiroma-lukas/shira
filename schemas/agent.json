@@ -39,6 +39,14 @@
             "model": {
               "type": "string",
               "minLength": 1
+            },
+            "provider": {
+              "default": "anthropic",
+              "type": "string",
+              "enum": [
+                "anthropic",
+                "openrouter"
+              ]
             }
           },
           "required": [
@@ -59,6 +67,14 @@
               "model": {
                 "type": "string",
                 "minLength": 1
+              },
+              "provider": {
+                "default": "anthropic",
+                "type": "string",
+                "enum": [
+                  "anthropic",
+                  "openrouter"
+                ]
               }
             },
             "required": [

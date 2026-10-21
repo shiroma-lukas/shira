@@ -14,7 +14,8 @@ For the managed, multi-machine version, see Shira Cloud.
 | Egress proxy | The only way out. HTTPS only, per-sandbox credentials and allowlist, never private or link-local addresses (so no cloud metadata endpoint) |
 | Credentials | The agent gets the model API key and nothing else. Git tokens are used only by platform commands, before and after the agent runs |
 
-Default allowlist: `api.anthropic.com`, `github.com`, `*.githubusercontent.com`. Repos add
+Default allowlist: `github.com`, `*.githubusercontent.com`, plus the agent's model provider
+(`api.anthropic.com` or `openrouter.ai`, see [providers](providers.md)). Repos add
 hosts with `egress.allow` in their config (e.g. `registry.npmjs.org`). Denials are logged
 by the proxy as `egress_denied` events.
 
@@ -23,7 +24,7 @@ by the proxy as `egress_denied` events.
 - Linux with Docker and [gVisor](https://gvisor.dev/docs/user_guide/install/) registered as
   the `runsc` runtime (`sudo runsc install && sudo systemctl restart docker`)
 - Node 22 and pnpm
-- A GitHub App ([setup](github-app.md)) and an Anthropic API key
+- A GitHub App ([setup](github-app.md)) and an Anthropic or [OpenRouter](providers.md) API key
 
 On macOS there is no gVisor. You can develop with `SHIRA_SANDBOX_RUNTIME=runc
 --unsafe-runtime`, which keeps every layer except the separate kernel.
@@ -41,7 +42,7 @@ pnpm shira migrate
 
 export SHIRA_GITHUB_APP_ID=123456
 export SHIRA_GITHUB_PRIVATE_KEY_PATH=~/keys/shira.pem
-export ANTHROPIC_API_KEY=...
+export ANTHROPIC_API_KEY=...   # or OPENROUTER_API_KEY, per the agents' providers (providers.md)
 pnpm shira dispatch
 ```
 

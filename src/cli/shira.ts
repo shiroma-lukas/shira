@@ -6,7 +6,7 @@ import { loadConfig } from "../config/load.js";
 import { TaskStatus } from "../contracts/index.js";
 import { fromPool, type Db } from "../db/client.js";
 import { migrate } from "../db/migrate.js";
-import { Ledger } from "../ledger/ledger.js";
+import { formatUsd, Ledger } from "../ledger/ledger.js";
 import { submit } from "../queue/intake.js";
 import { Settings } from "../queue/settings.js";
 import { githubFromEnv, runDispatcher, type SandboxMode } from "./dispatch.js";
@@ -100,7 +100,7 @@ async function main(db: Db, argv: string[]): Promise<void> {
       console.log(line(task));
       console.log(`  priority ${task.priority}, attempts ${task.attempts}, retries ${task.retriesUsed}/${task.budget.retries}`);
       console.log(
-        `  spend $${spend.usd.toFixed(2)}/$${task.budget.usd}, ${spend.tokens}/${task.budget.tokens} tokens, ` +
+        `  spend ${formatUsd(spend)}/$${task.budget.usd}, ${spend.tokens}/${task.budget.tokens} tokens, ` +
           `${spend.minutes.toFixed(1)}/${task.budget.minutes} min`,
       );
       console.log(`  scope ${task.scope.paths.join(", ")}`);

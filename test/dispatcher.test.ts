@@ -1,4 +1,4 @@
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,6 +13,7 @@ import { CheckpointStore } from "../src/queue/checkpoints.js";
 import { Settings } from "../src/queue/settings.js";
 import { TaskStore } from "../src/queue/store.js";
 import { ClaudeCodeAdapter } from "../src/harness/claude-code.js";
+import { harnessAccessFromEnv } from "../src/harness/providers.js";
 import { FileTranscriptStore } from "../src/harness/transcripts.js";
 import { LocalSandboxProvider } from "../src/sandbox/local.js";
 import { FakeCodeHost, makeOrigin, originBranches, ScriptedAdapter, type Step } from "./fakes.js";
@@ -106,6 +107,78 @@ describe("Dispatcher", () => {
     );
     expect(runs.rows[0]).toMatchObject({ harness: "claude-code", usd: "0.420000" });
     expect(runs.rows[0]!.transcript_uri).toMatch(/^file:/);
+  });
+
+  describe("with an OpenRouter model", () => {
+    const glmConfig = (): LoadedConfig => {
+      const c = config();
+      c.agents[0]!.model.primary = { harness: "claude-code", model: "z-ai/glm-5.3-flash", provider: "openrouter" };
+      return c;
+    };
+    const glmDispatcher = (adapter: ClaudeCodeAdapter, env: NodeJS.ProcessEnv) =>
+      new Dispatcher({
+        db,
+        config: glmConfig(),
+        adapters: new Map([["claude-code", adapter]]),
+        sandboxes: new LocalSandboxProvider({ unsafeNoIsolation: true, cloneUrl: () => origin }),
+        harnessAccess: harnessAccessFromEnv(env),
+        codeHost: host,
+        instructions: async () => "be a worker",
+        owner: "dispatcher-test",
+        log: () => {},
+      });
+
+    it("runs Claude Code against OpenRouter and records the priced cost", async () => {
+      const envFile = join(await mkdtemp(join(tmpdir(), "shira-env-")), "env.jsonl");
+      process.env.FAKE_CLAUDE_SCENARIO = "unknown_model";
+      process.env.FAKE_CLAUDE_ENV_FILE = envFile;
+      const task = await store.create(newTask({ budget }), "cli:test");
+      const adapter = new ClaudeCodeAdapter({
+        transcripts: new FileTranscriptStore(await mkdtemp(join(tmpdir(), "shira-transcripts-"))),
+        binary: fileURLToPath(new URL("./fixtures/fake-claude.mjs", import.meta.url)),
+        prices: (provider, model) => (provider === "openrouter" && model === "z-ai/glm-5.3-flash" ? { input: 1e-7, output: 2e-7 } : null),
+      });
+      try {
+        expect(await glmDispatcher(adapter, { OPENROUTER_API_KEY: "sk-or-test" }).tick()).toMatchObject({ status: "done" });
+      } finally {
+        delete process.env.FAKE_CLAUDE_SCENARIO;
+        delete process.env.FAKE_CLAUDE_ENV_FILE;
+      }
+      expect(JSON.parse((await readFile(envFile, "utf8")).trim())).toEqual({
+        ANTHROPIC_BASE_URL: "https://openrouter.ai/api",
+        ANTHROPIC_AUTH_TOKEN: "sk-or-test",
+        ANTHROPIC_API_KEY: "",
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: "z-ai/glm-5.3-flash",
+      });
+      const runs = await db.query<{ model: string; usd: string }>("SELECT model, usd FROM runs WHERE task_id = $1", [task.id]);
+      // 1M input + 500k cache reads at 1e-7, 200k output at 2e-7.
+      expect(runs.rows[0]).toEqual({ model: "z-ai/glm-5.3-flash", usd: "0.190000" });
+      expect(host.prs[0]?.body).toContain("$0.19 of $5 budget");
+    });
+
+    it("records an unpriced run as unknown cost, not zero", async () => {
+      process.env.FAKE_CLAUDE_SCENARIO = "unknown_model";
+      const task = await store.create(newTask({ budget }), "cli:test");
+      const adapter = new ClaudeCodeAdapter({
+        transcripts: new FileTranscriptStore(await mkdtemp(join(tmpdir(), "shira-transcripts-"))),
+        binary: fileURLToPath(new URL("./fixtures/fake-claude.mjs", import.meta.url)),
+      });
+      try {
+        expect(await glmDispatcher(adapter, { OPENROUTER_API_KEY: "sk-or-test" }).tick()).toMatchObject({ status: "done" });
+      } finally {
+        delete process.env.FAKE_CLAUDE_SCENARIO;
+      }
+      expect(await new Ledger(db).taskSpend(task.id)).toMatchObject({ usd: 0, unpricedRuns: 1 });
+      expect(host.prs[0]?.body).toContain("$0.00 + unknown (1 unpriced run) of $5 budget");
+    });
+
+    it("fails without retrying when the provider's key is missing", async () => {
+      const task = await store.create(newTask({ budget }), "cli:test");
+      const adapter = new ClaudeCodeAdapter({ transcripts: new FileTranscriptStore(await mkdtemp(join(tmpdir(), "shira-t-"))) });
+      expect(await glmDispatcher(adapter, {}).tick()).toMatchObject({ status: "failed" });
+      const failed = (await store.events(task.id)).at(-1);
+      expect(failed?.payload).toMatchObject({ permanent: true, reason: expect.stringMatching(/OPENROUTER_API_KEY is not set/) });
+    });
   });
 
   it("checkpoints on needs_decision and resumes with the answer", async () => {

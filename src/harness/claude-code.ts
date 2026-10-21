@@ -8,6 +8,7 @@ import type {
   StartInput,
 } from "../contracts/adapter.js";
 import type { Reply, Usage } from "../contracts/index.js";
+import { costUsd, type PriceLookup, type TokenCounts } from "../ledger/prices.js";
 import type { TranscriptStore } from "./transcripts.js";
 
 /** Tool ids from agent definitions, mapped to Claude Code tool names. */
@@ -65,6 +66,31 @@ interface ResultEvent {
     cache_read_input_tokens?: number;
     cache_creation_input_tokens?: number;
   };
+  /** Per-model totals. Unlike `usage`, filled in even when the run stops on its budget. */
+  modelUsage?: Record<
+    string,
+    { inputTokens?: number; outputTokens?: number; cacheReadInputTokens?: number; cacheCreationInputTokens?: number }
+  >;
+}
+
+/** Token totals for the run: per-model totals when present, else the top-level usage. */
+function tokenCounts(result: ResultEvent | undefined): TokenCounts {
+  const models = Object.values(result?.modelUsage ?? {});
+  if (models.length) {
+    const sum = (k: keyof (typeof models)[number]) => models.reduce((n, m) => n + (m[k] ?? 0), 0);
+    return {
+      inputTokens: sum("inputTokens"),
+      outputTokens: sum("outputTokens"),
+      cacheReadTokens: sum("cacheReadInputTokens"),
+      cacheWriteTokens: sum("cacheCreationInputTokens"),
+    };
+  }
+  return {
+    inputTokens: result?.usage?.input_tokens ?? 0,
+    outputTokens: result?.usage?.output_tokens ?? 0,
+    cacheReadTokens: result?.usage?.cache_read_input_tokens ?? 0,
+    cacheWriteTokens: result?.usage?.cache_creation_input_tokens ?? 0,
+  };
 }
 
 interface Session {
@@ -87,8 +113,9 @@ function refLine(ref: StartInput["envelope"]["refs"][number], input: StartInput)
  * server errors (5xx) stay retryable.
  */
 function isConfigError(result: ResultEvent): boolean {
-  if (result.api_error_status) return [400, 401, 403, 404].includes(result.api_error_status);
-  return /API Error: 40[0134]\b/.test(result.result ?? "");
+  // 402: OpenRouter is out of credits; a retry minutes later fails the same way.
+  if (result.api_error_status) return [400, 401, 402, 403, 404].includes(result.api_error_status);
+  return /API Error: 40[01234]\b/.test(result.result ?? "");
 }
 
 function renderTask(input: StartInput): string {
@@ -137,8 +164,13 @@ function renderResume(input: ResumeInput): string {
  *   and auto-memory and confines file tools to the workspace; `--strict-mcp-config`
  *   drops MCP servers. The target repo's CLAUDE.md is still read, which is wanted.
  * - Auth: `--bare` ignores interactive logins, so the sandbox must provide
- *   ANTHROPIC_API_KEY (or a gateway equivalent).
- * - Dollar budget: `--max-budget-usd` stops the run at the task's remaining budget.
+ *   ANTHROPIC_API_KEY, or for OpenRouter ANTHROPIC_BASE_URL and ANTHROPIC_AUTH_TOKEN
+ *   (see `claudeCodeEnv`).
+ * - Dollar budget: with Anthropic, `--max-budget-usd` stops the run at the task's
+ *   remaining budget. Claude Code can't price other providers' models (it falls back to
+ *   a Claude price, orders of magnitude off for small open models), so for them the
+ *   flag is left out, the cost comes from the price table, and the dispatcher enforces
+ *   dollars between runs and time during them.
  * - Resume is by replay. Claude Code keeps session files in the sandbox, which is
  *   destroyed on pause, so a resumed run is a new session briefed with the branch,
  *   the question, and the answer.
@@ -152,6 +184,8 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
     private readonly opts: {
       transcripts: TranscriptStore;
       binary?: string;
+      /** Prices models Claude Code can't (every provider but Anthropic). Without it their cost is unknown. */
+      prices?: PriceLookup;
     },
   ) {}
 
@@ -211,8 +245,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
       input.instructions,
       "--json-schema",
       JSON.stringify(REPLY_SCHEMA),
-      "--max-budget-usd",
-      Math.max(input.remaining.usd, 0).toFixed(2),
+      ...(input.provider === "anthropic" ? ["--max-budget-usd", Math.max(input.remaining.usd, 0).toFixed(2)] : []),
     ];
     const proc = input.launch(argv);
     const session: Session = { proc, input, sessionId, cancelled: false, done: undefined as never };
@@ -243,13 +276,11 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
       .write(s.input.envelope.task_id, s.input.runId, lines)
       .catch((err: Error) => `unavailable: ${err.message.slice(0, 200)}`);
 
+    const tokens = tokenCounts(result);
     const usage: Usage = {
       model: s.input.model,
-      inputTokens: result?.usage?.input_tokens ?? 0,
-      outputTokens: result?.usage?.output_tokens ?? 0,
-      cacheReadTokens: result?.usage?.cache_read_input_tokens ?? 0,
-      cacheWriteTokens: result?.usage?.cache_creation_input_tokens ?? 0,
-      usd: result?.total_cost_usd ?? 0,
+      ...tokens,
+      usd: this.cost(s.input, result, tokens),
       durationMs: result?.duration_ms ?? Date.now() - started,
     };
     const base = { usage, transcriptUri, sessionRef: result?.session_id ?? s.sessionId };
@@ -264,6 +295,14 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
     }
 
     return { ...base, kind: "reply", reply: await this.toReply(s, result.structured_output) };
+  }
+
+  /** The run's cost, or null when unknown: no result to read it from, or no price for the model. */
+  private cost(input: StartInput, result: ResultEvent | undefined, tokens: TokenCounts): number | null {
+    if (!result) return null;
+    if (input.provider === "anthropic") return result.total_cost_usd ?? null;
+    const price = this.opts.prices?.(input.provider, input.model);
+    return price ? costUsd(price, tokens) : null;
   }
 
   private async toReply(s: Session, out: StructuredReply): Promise<Reply> {

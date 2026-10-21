@@ -49,7 +49,7 @@ Add a repo config under `config/repos/` (see `config/repos/example.yaml`), then:
 ```sh
 export SHIRA_GITHUB_APP_ID=123456
 export SHIRA_GITHUB_PRIVATE_KEY_PATH=~/keys/shira-yourorg.pem
-export ANTHROPIC_API_KEY=...           # workers run Claude Code in --bare mode
+export ANTHROPIC_API_KEY=...           # workers run Claude Code in --bare mode (or OPENROUTER_API_KEY, see providers.md)
 
 pnpm shira submit --repo yourorg/yourrepo --goal "Fix ..."
 pnpm shira dispatch --unsafe-local-sandbox
