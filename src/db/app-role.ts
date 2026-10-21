@@ -30,7 +30,10 @@ export async function ensureAppUser(db: SqlClient, name: string, password: strin
   // above and the verifier's alphabet (base64, digits, $ : -) holds no quote.
   const verifier = scramVerifier(password);
   if (exists) {
-    await db.exec(`ALTER ROLE ${name} WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE PASSWORD '${verifier}'`);
+    // Only LOGIN and PASSWORD: naming any other attribute, even NOSUPERUSER, needs a real
+    // superuser, which a managed database's admin (RDS master) is not. A user that gained
+    // other rights shows up in `excessPrivileges` at dispatch.
+    await db.exec(`ALTER ROLE ${name} WITH LOGIN PASSWORD '${verifier}'`);
     await db.exec(`GRANT ${APP_ROLE} TO ${name}`);
     return "updated";
   }
