@@ -1,4 +1,4 @@
-import type { Spend } from "../ledger/ledger.js";
+import { formatUsd, type Spend } from "../ledger/ledger.js";
 import type { Task } from "../queue/store.js";
 import { neutralizeForGitHub } from "../security/untrusted.js";
 
@@ -96,7 +96,7 @@ export function prDescription(i: PrDescriptionInput): string {
       : []),
     "## Cost",
     "",
-    `$${i.spend.usd.toFixed(2)} of $${t.budget.usd} budget, ${i.spend.tokens.toLocaleString("en-US")} tokens, ` +
+    `${formatUsd(i.spend)} of $${t.budget.usd} budget, ${i.spend.tokens.toLocaleString("en-US")} tokens, ` +
       `${i.spend.minutes.toFixed(1)} min across ${i.runs} run(s).`,
     "",
     "---",

@@ -7,6 +7,16 @@ export interface SandboxSpec {
   branch: string;
   /** Resume point: check out the task branch at this commit. Absent for a fresh start from the default branch. */
   checkpointSha?: string;
+  /** How the agent's harness reaches its model provider. */
+  harness?: HarnessAccess;
+}
+
+/** What a sandbox needs to run one agent's harness: its model provider's credential and hosts. */
+export interface HarnessAccess {
+  /** Passed to processes started with `launch` only, never to `exec`. */
+  env: Record<string, string>;
+  /** Hosts added to the sandbox's egress allowlist. */
+  egress: string[];
 }
 
 export type RepoAccess = "read" | "write";

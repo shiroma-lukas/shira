@@ -9,7 +9,7 @@ import { loadPeople } from "../people/people.js";
 import { ensureAppUser, excessPrivileges } from "../db/app-role.js";
 import { fromPool, type Db } from "../db/client.js";
 import { migrate } from "../db/migrate.js";
-import { Ledger } from "../ledger/ledger.js";
+import { formatUsd, Ledger } from "../ledger/ledger.js";
 import { submit } from "../queue/intake.js";
 import { Settings } from "../queue/settings.js";
 import { githubFromEnv, runDispatcher, type SandboxMode } from "./dispatch.js";
@@ -46,7 +46,8 @@ const USAGE = `usage: shira <command> [options]
 env: from the environment, then ./.env if present
      DATABASE_URL (default postgres://shira:shira@localhost:54329/shira), SHIRA_CONFIG (default ./config)
      migrate and app-user connect with SHIRA_ADMIN_DATABASE_URL when set, else DATABASE_URL
-     dispatch needs SHIRA_GITHUB_APP_ID, SHIRA_GITHUB_PRIVATE_KEY_PATH, ANTHROPIC_API_KEY, and for
+     dispatch needs SHIRA_GITHUB_APP_ID, SHIRA_GITHUB_PRIVATE_KEY_PATH, the agents' provider keys
+     (ANTHROPIC_API_KEY and/or OPENROUTER_API_KEY, see docs/providers.md), and for
      Docker SHIRA_EGRESS_ADMIN_TOKEN; see docs/self-hosting.md for the optional ones`;
 
 const actor = `cli:${userInfo().username}`;
@@ -117,12 +118,12 @@ async function main(db: Db, argv: string[]): Promise<void> {
       console.log(line(task));
       console.log(`  priority ${task.priority}, attempts ${task.attempts}, retries ${task.retriesUsed}/${task.budget.retries}`);
       console.log(
-        `  spend $${spend.usd.toFixed(2)}/$${task.budget.usd}, ${spend.tokens}/${task.budget.tokens} tokens, ` +
+        `  spend ${formatUsd(spend)}/$${task.budget.usd}, ${spend.tokens}/${task.budget.tokens} tokens, ` +
           `${spend.minutes.toFixed(1)}/${task.budget.minutes} min`,
       );
       console.log(`  scope ${task.scope.paths.join(", ")}`);
       for (const r of await new Ledger(db).runs(id)) {
-        console.log(`  run ${r.attempt}  ${(r.outcome ?? "running").padEnd(15)} $${r.usd.toFixed(2)}  ${r.transcriptUri ?? "(no transcript yet)"}`);
+        console.log(`  run ${r.attempt}  ${(r.outcome ?? "running").padEnd(15)} ${r.usd === null ? "$?" : `$${r.usd.toFixed(2)}`}  ${r.transcriptUri ?? "(no transcript yet)"}`);
       }
       const events = await store.events(id);
       for (const l of linkLines(task, events)) console.log(l);

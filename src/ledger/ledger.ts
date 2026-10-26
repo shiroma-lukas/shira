@@ -3,7 +3,9 @@ import type { RunOutcome } from "../contracts/adapter.js";
 import type { SqlClient } from "../db/migrate.js";
 
 export interface Spend {
+  /** Known cost only. Runs with an unknown cost are counted in `unpricedRuns`, not as zero. */
   usd: number;
+  unpricedRuns: number;
   /** All billed tokens: input, output, cache reads, and cache writes. */
   tokens: number;
   minutes: number;
@@ -11,8 +13,15 @@ export interface Spend {
 
 export type BudgetDimension = "usd" | "tokens" | "minutes";
 
+/** "$1.23", or "$1.23 + unknown (2 unpriced runs)" when some runs have no known cost. */
+export function formatUsd(spend: Pick<Spend, "usd" | "unpricedRuns">): string {
+  const known = `$${spend.usd.toFixed(2)}`;
+  if (!spend.unpricedRuns) return known;
+  return `${known} + unknown (${spend.unpricedRuns} unpriced run${spend.unpricedRuns === 1 ? "" : "s"})`;
+}
+
 /** Returns the first budget dimension that spend has reached, or null if within budget (FR-K2). */
-export function exceededBudget(budget: Budget, spend: Spend): BudgetDimension | null {
+export function exceededBudget(budget: Budget, spend: Pick<Spend, "usd" | "tokens" | "minutes">): BudgetDimension | null {
   if (spend.usd >= budget.usd) return "usd";
   if (spend.tokens >= budget.tokens) return "tokens";
   if (spend.minutes >= budget.minutes) return "minutes";
@@ -55,34 +64,46 @@ export class Ledger {
     );
   }
 
-  /** Every run of a task, oldest first: what the PR and `shira show` link to (FR-L2). */
-  async runs(taskId: string): Promise<{ attempt: number; outcome: string | null; usd: number; transcriptUri: string | null }[]> {
-    const { rows } = await this.db.query<{ attempt: number; outcome: string | null; usd: string; transcript_uri: string | null }>(
+  /** Every run of a task, oldest first: what the PR and `shira show` link to (FR-L2). `usd` is null when unknown. */
+  async runs(taskId: string): Promise<{ attempt: number; outcome: string | null; usd: number | null; transcriptUri: string | null }[]> {
+    const { rows } = await this.db.query<{ attempt: number; outcome: string | null; usd: string | null; transcript_uri: string | null }>(
       "SELECT attempt, outcome, usd, transcript_uri FROM runs WHERE task_id = $1 ORDER BY attempt",
       [taskId],
     );
-    return rows.map((r) => ({ attempt: r.attempt, outcome: r.outcome, usd: Number(r.usd), transcriptUri: r.transcript_uri }));
+    return rows.map((r) => ({
+      attempt: r.attempt,
+      outcome: r.outcome,
+      usd: r.usd === null ? null : Number(r.usd),
+      transcriptUri: r.transcript_uri,
+    }));
   }
 
   /** Total spend across every run of a task, including runs before a pause. */
   async taskSpend(taskId: string): Promise<Spend> {
-    const { rows } = await this.db.query<{ usd: string; tokens: string; ms: string }>(
+    const { rows } = await this.db.query<{ usd: string; unpriced: string; tokens: string; ms: string }>(
       `SELECT coalesce(sum(usd), 0) AS usd,
+              count(*) FILTER (WHERE usd IS NULL) AS unpriced,
               coalesce(sum(input_tokens + output_tokens + cache_read_tokens + cache_write_tokens), 0) AS tokens,
               coalesce(sum(duration_ms), 0) AS ms
        FROM runs WHERE task_id = $1`,
       [taskId],
     );
     const r = rows[0]!;
-    return { usd: Number(r.usd), tokens: Number(r.tokens), minutes: Number(r.ms) / 60_000 };
+    return { usd: Number(r.usd), unpricedRuns: Number(r.unpriced), tokens: Number(r.tokens), minutes: Number(r.ms) / 60_000 };
   }
 
-  /** Spend since the start of the current calendar month (UTC). */
-  async monthSpendUsd(): Promise<number> {
-    const { rows } = await this.db.query<{ usd: string }>(
-      `SELECT coalesce(sum(usd), 0) AS usd FROM runs
-       WHERE started_at >= date_trunc('month', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'`,
+  /**
+   * Spend since the start of the current calendar month (UTC), for the monthly ceiling.
+   * It fails closed: a run with no known cost (unpriced, still running, or orphaned by a
+   * dead dispatcher) counts at its task's whole dollar budget, the most it was allowed to spend.
+   */
+  async monthSpend(): Promise<{ usd: number; unpricedRuns: number }> {
+    const { rows } = await this.db.query<{ usd: string; unpriced: string }>(
+      `SELECT coalesce(sum(coalesce(r.usd, (t.budget->>'usd')::numeric)), 0) AS usd,
+              count(*) FILTER (WHERE r.usd IS NULL) AS unpriced
+       FROM runs r JOIN tasks t ON t.id = r.task_id
+       WHERE r.started_at >= date_trunc('month', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'`,
     );
-    return Number(rows[0]!.usd);
+    return { usd: Number(rows[0]!.usd), unpricedRuns: Number(rows[0]!.unpriced) };
   }
 }

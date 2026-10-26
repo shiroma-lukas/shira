@@ -78,7 +78,8 @@ export const Usage = z.object({
   outputTokens: z.number().int().min(0),
   cacheReadTokens: z.number().int().min(0),
   cacheWriteTokens: z.number().int().min(0),
-  usd: z.number().min(0),
+  /** Null when the cost is unknown (no price for the model): never recorded as zero. */
+  usd: z.number().min(0).nullable(),
   durationMs: z.number().int().min(0),
 });
 export type Usage = z.infer<typeof Usage>;
