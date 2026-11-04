@@ -111,6 +111,8 @@ environment wins. Docker Compose reads the same file.
 | `SHIRA_ADMIN_DATABASE_URL` | `DATABASE_URL` | Admin connection for `migrate` and `app-user` only |
 | `SHIRA_CONFIG` | `./config` | Agent and repo definitions |
 | `SHIRA_CONTEXT_DIR` | `./context-template` | Context repo checkout: role instructions, people, and approval rules |
+| `SHIRA_CONTEXT_REPO` | (unset) | The context repo on GitHub (`org/name`), where decision records are proposed as PRs |
+| `SHIRA_CONTEXT_BRANCH` | `main` | The context repo's main branch, which only humans merge into |
 | `SHIRA_TRANSCRIPTS_DIR` | `./.shira/transcripts` | Redacted run transcripts on local disk |
 | `SHIRA_TRANSCRIPTS_URI` | (unset) | `s3://bucket[/prefix]` stores transcripts in S3 instead (AWS credentials and region from the environment) |
 | `SHIRA_SANDBOX_RUNTIME` | `runsc` | Container runtime; anything else needs `--unsafe-runtime` |
@@ -156,6 +158,30 @@ anyone else are recorded and ignored.
   proposal.
 
 Approvals arrive with chat intake and the concierge (M2). Until then nothing asks for one.
+
+## Decision records
+
+An approved decision gets a record (PRD FR-C2): what, why, who approved it, when, and links.
+
+```sh
+pnpm shira decide --title "Strip accents in slugs" --what "Slugs drop diacritics" \
+  --why "Links with accents break in some clients" \
+  --approver tech-lead-1 --repo org/web --risk low --usd 5
+pnpm shira submit --repo org/web --decision D-0001 --goal "Implement D-0001"
+```
+
+- The approver must be allowed by `approvals.yaml` for that repo, risk, and estimated
+  cost; otherwise nothing is recorded.
+- Records are numbered `D-0001`, `D-0002`, ... and stored in the database as they were
+  approved. Shira proposes the Markdown copy to the context repo (`SHIRA_CONTEXT_REPO`) as a
+  PR on its own branch, and never writes to the context repo's main branch: merging is a
+  human's call (FR-C4). Install the GitHub App on the context repo too. If the PR can't be
+  opened, the decision still stands; `shira decision D-0001 --propose` retries.
+- A task submitted with `--decision` must be for the repo the decision covers. Its worker
+  gets the record as an attachment. That attachment is not marked untrusted, because an
+  authorized approval is what may set a task's direction. The PR says "Implements D-0001".
+
+From the concierge (M2) on, approving a proposal in chat records the decision the same way.
 
 ## Review feedback
 

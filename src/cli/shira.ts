@@ -5,7 +5,8 @@ import pg from "pg";
 import { loadConfig } from "../config/load.js";
 import { TaskStatus } from "../contracts/index.js";
 import { Risk } from "../contracts/people.js";
-import { loadPeople } from "../people/people.js";
+import { getDecision, proposeDecision, recordDecision, type ContextRepoRef } from "../decisions/decisions.js";
+import { loadPeople, syncIdentities, type People } from "../people/people.js";
 import { ensureAppUser, excessPrivileges } from "../db/app-role.js";
 import { fromPool, type Db } from "../db/client.js";
 import { migrate } from "../db/migrate.js";
@@ -25,7 +26,7 @@ const USAGE = `usage: shira <command> [options]
                                             password from SHIRA_APP_DB_PASSWORD
   submit --repo <org/name> --goal <text>    queue a task
          [--issue <n>]                      ...or resolve a GitHub issue (goal optional)
-         [--path <glob>]... [--priority <n>]
+         [--path <glob>]... [--priority <n>] [--decision D-0001]
   list [--status <status>] [--limit <n>]    list recent tasks
   show <task-id>                            task details, spend, and event log
   cancel <task-id> [--reason <text>]        cancel an unfinished task
@@ -35,6 +36,11 @@ const USAGE = `usage: shira <command> [options]
   kill on|off|status                        kill switch: stop and pause running tasks, claim nothing,
                                             revoke GitHub tokens; off lists the tasks it paused
   budget monthly <usd>|none                 set the monthly org spend ceiling
+  decide --title <t> --what <t> --why <t> --approver <identity> --repo <org/name> --risk <r> --usd <n>
+         [--assumptions <t>] [--link <url>]...
+                                            record an approved decision (D-NNNN) and propose it to the
+                                            context repo as a PR (SHIRA_CONTEXT_REPO)
+  decision <D-NNNN> [--propose]             show a decision; --propose (re)opens its context repo PR
   approvers --repo <org/name> --risk <low|medium|high> --usd <n>
                                             who may approve such a proposal (context repo approvals.yaml)
   dispatch                                  run tasks in gVisor sandboxes (needs the egress proxy:
@@ -50,6 +56,18 @@ env: from the environment, then ./.env if present
      Docker SHIRA_EGRESS_ADMIN_TOKEN; see docs/self-hosting.md for the optional ones`;
 
 const actor = `cli:${userInfo().username}`;
+
+async function peopleOrFail(): Promise<People> {
+  const loaded = await loadPeople(process.env.SHIRA_CONTEXT_DIR ?? "context-template");
+  if (!loaded.ok) fail(loaded.errors.map((e) => `${e.file}: ${e.message}`).join("\n"));
+  return loaded.people;
+}
+
+/** The context repo on GitHub, where records and context changes are proposed as PRs. */
+function contextRepo(): ContextRepoRef | null {
+  const repo = process.env.SHIRA_CONTEXT_REPO;
+  return repo ? { repo, base: process.env.SHIRA_CONTEXT_BRANCH ?? "main" } : null;
+}
 
 function fail(message: string): never {
   console.error(message);
@@ -86,6 +104,7 @@ async function main(db: Db, argv: string[]): Promise<void> {
           issue: { type: "string" },
           path: { type: "string", multiple: true },
           priority: { type: "string" },
+          decision: { type: "string" },
         },
       });
       if (!values.repo || (!values.goal && !values.issue)) fail("submit needs --repo and --goal or --issue");
@@ -99,6 +118,7 @@ async function main(db: Db, argv: string[]): Promise<void> {
         ...(values.issue ? { issue: Number(values.issue) } : {}),
         paths: values.path,
         priority: values.priority ? Number(values.priority) : 0,
+        ...(values.decision ? { decisionId: values.decision } : {}),
       }, values.issue ? { issues: await githubFromEnv() } : {});
       console.log(line(task));
       return;
@@ -192,6 +212,63 @@ async function main(db: Db, argv: string[]): Promise<void> {
       }
       return;
     }
+    case "decide": {
+      const { values } = parseArgs({
+        args: rest,
+        options: {
+          title: { type: "string" },
+          what: { type: "string" },
+          why: { type: "string" },
+          assumptions: { type: "string" },
+          approver: { type: "string" },
+          repo: { type: "string" },
+          risk: { type: "string" },
+          usd: { type: "string" },
+          link: { type: "string", multiple: true },
+        },
+      });
+      const risk = Risk.safeParse(values.risk);
+      const usd = Number(values.usd);
+      if (!values.title || !values.what || !values.why || !values.approver || !values.repo || !risk.success || !(usd >= 0)) {
+        fail("decide needs --title, --what, --why, --approver, --repo, --risk low|medium|high, and --usd");
+      }
+      const people = await peopleOrFail();
+      await syncIdentities(db, people);
+      const context = contextRepo();
+      const r = await recordDecision(
+        { db, people, ...(context ? { context: { changes: await githubFromEnv(), repo: context } } : {}) },
+        {
+          title: values.title,
+          what: values.what,
+          why: values.why,
+          ...(values.assumptions ? { assumptions: values.assumptions } : {}),
+          approver: values.approver,
+          repo: values.repo,
+          risk: risk.data,
+          estimatedUsd: usd,
+          links: values.link ?? [],
+        },
+      );
+      console.log(`${r.decision.id}  ${r.decision.recordRef}  approved by ${r.decision.approver}`);
+      if (r.contextPr) console.log(`context PR: ${r.contextPr.url}`);
+      else console.log(`not proposed to the context repo: ${r.contextError}. Retry with \`shira decision ${r.decision.id} --propose\`.`);
+      console.log(`implement it with: shira submit --repo ${values.repo} --decision ${r.decision.id} --goal "..."`);
+      return;
+    }
+    case "decision": {
+      const { values, positionals } = parseArgs({ args: rest, allowPositionals: true, options: { propose: { type: "boolean", default: false } } });
+      const id = positionals[0] ?? fail("decision needs an id, e.g. D-0001");
+      const decision = (await getDecision(db, id)) ?? fail(`decision ${id} not found`);
+      if (values.propose) {
+        const context = contextRepo() ?? fail("set SHIRA_CONTEXT_REPO to the context repo (org/name)");
+        const pr = await proposeDecision({ db, changes: await githubFromEnv(), repo: context }, decision);
+        console.log(`context PR: ${pr.url}`);
+        return;
+      }
+      console.log(decision.body.trimEnd());
+      console.log(`\nrecord: ${decision.recordRef}${decision.meta.context_pr ? `  context PR: ${decision.meta.context_pr}` : "  (not proposed yet)"}`);
+      return;
+    }
     case "approvers": {
       const { values } = parseArgs({
         args: rest,
@@ -200,9 +277,7 @@ async function main(db: Db, argv: string[]): Promise<void> {
       const risk = Risk.safeParse(values.risk);
       const usd = Number(values.usd);
       if (!values.repo || !risk.success || !(usd >= 0)) fail("approvers needs --repo, --risk low|medium|high, and --usd");
-      const loaded = await loadPeople(process.env.SHIRA_CONTEXT_DIR ?? "context-template");
-      if (!loaded.ok) fail(loaded.errors.map((e) => `${e.file}: ${e.message}`).join("\n"));
-      const who = loaded.people.approversFor({ repo: values.repo, risk: risk.data, estimatedUsd: usd });
+      const who = (await peopleOrFail()).approversFor({ repo: values.repo, risk: risk.data, estimatedUsd: usd });
       if (!who.length) console.log("nobody: no approval rule covers this");
       for (const i of who) console.log(`${i.id.padEnd(20)} ${i.name}${i.github ? `  @${i.github}` : ""}`);
       return;
