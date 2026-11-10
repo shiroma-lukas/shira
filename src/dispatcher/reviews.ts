@@ -19,24 +19,34 @@ const TRUSTED_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
 const ACTIONABLE = new Set<Review["state"]>(["COMMENTED", "CHANGES_REQUESTED"]);
 /** Only one dispatcher polls at a time; the lease outlives a poll, and lapses if its holder dies. */
 const LEASE_KEY = "review_poll_lease";
+/**
+ * Follow-ups a review gets before it's dropped. A failed follow-up offers its reviews
+ * again, since the failure may have been transient; a second failure is likely to repeat.
+ */
+const MAX_FOLLOWUPS_PER_REVIEW = 2;
 
 interface WatchedPr {
   task_id: string;
   repo: string;
   number: number;
   scope: Scope;
+  /** Shira last saw it closed: checked now and then, in case it reopens. */
+  closed: boolean;
 }
 
 /**
  * Turns review feedback on Shira's PRs into follow-up tasks for the worker (FR-H5, Flow D).
  * Polls through the GitHub App, so no public webhook endpoint is needed.
  *
- * - Watches PRs that Shira opened in the last 30 days until they close.
+ * - Watches PRs that Shira opened in the last 30 days. A closed PR is checked only every
+ *   15 minutes, and is watched again if it reopens.
  * - Acts on submitted reviews that comment or request changes, from someone in the context
  *   repo's identities or with push access (owner, member, collaborator). Other reviews
  *   are recorded on the PR's task and ignored.
  * - Bundles every pending review on a PR into one follow-up task, and creates at most one
  *   unfinished follow-up per PR; reviews that arrive meanwhile go into the next one.
+ * - A review whose follow-up failed is offered again, up to two follow-ups in all. One
+ *   whose follow-up was cancelled is not: a human chose that.
  * - The review text reaches the agent as untrusted input (the dispatcher attaches it).
  */
 export class ReviewWatcher {
@@ -44,6 +54,8 @@ export class ReviewWatcher {
   private readonly settings: Settings;
   /** The poll in progress, if any: the lease renews for its own holder, so it can't stop a second poll in this process. */
   private inFlight: Promise<string[]> | null = null;
+  /** When each closed PR was last checked, by "repo#number". */
+  private readonly closedCheckedAt = new Map<string, number>();
 
   constructor(
     private readonly deps: {
@@ -54,6 +66,9 @@ export class ReviewWatcher {
       owner: string;
       /** How long one poll may hold the lease. Default 5 minutes. */
       leaseMs?: number;
+      /** How often a closed PR is checked for reopening. Default 15 minutes. */
+      closedRecheckMs?: number;
+      now?: () => number;
       log?: (message: string, fields?: Record<string, unknown>) => void;
     },
   ) {
@@ -104,23 +119,28 @@ export class ReviewWatcher {
 
   /** Shira's PRs worth watching, each with the task that opened it. */
   private async watched(): Promise<WatchedPr[]> {
+    // `closed`: the latest pr_closed or pr_reopened note on the PR is pr_closed.
     const { rows } = await this.deps.db.query<WatchedPr>(
       `SELECT DISTINCT ON (t.repo, (e.payload->'pr'->>'number')::int)
-              e.task_id, t.repo, (e.payload->'pr'->>'number')::int AS number, t.scope
+              e.task_id, t.repo, (e.payload->'pr'->>'number')::int AS number, t.scope,
+              COALESCE((
+                SELECT c.payload->>'type' = 'pr_closed' FROM task_events c
+                WHERE c.kind = 'note' AND c.payload->>'type' IN ('pr_closed', 'pr_reopened')
+                  AND c.payload->'pr'->>'repo' = t.repo
+                  AND (c.payload->'pr'->>'number')::int = (e.payload->'pr'->>'number')::int
+                ORDER BY c.id DESC LIMIT 1), false) AS closed
        FROM task_events e JOIN tasks t ON t.id = e.task_id
        WHERE e.kind = 'state_change' AND e.to_status = 'done' AND e.payload ? 'pr'
          AND e.at > now() - interval '30 days'
-         AND NOT EXISTS (
-           SELECT 1 FROM task_events c
-           WHERE c.kind = 'note' AND c.payload->>'type' = 'pr_closed'
-             AND c.payload->'pr'->>'repo' = t.repo
-             AND (c.payload->'pr'->>'number')::int = (e.payload->'pr'->>'number')::int)
        ORDER BY t.repo, (e.payload->'pr'->>'number')::int, e.id`,
     );
     return rows.filter((r) => this.deps.config.repos.some((c) => c.repo === r.repo));
   }
 
-  /** Review ids already turned into a task or ignored, and whether a follow-up is still unfinished. */
+  /**
+   * Review ids not to act on again (ignored, answered, cancelled, or failed too often),
+   * and whether a follow-up is still unfinished.
+   */
   private async handled(pr: WatchedPr): Promise<{ seen: Set<number>; active: boolean }> {
     const { rows } = await this.deps.db.query<{ payload: { type: string; review_ids?: number[]; review_id?: number }; status: string }>(
       `SELECT e.payload, t.status FROM task_events e JOIN tasks t ON t.id = e.task_id
@@ -129,25 +149,38 @@ export class ReviewWatcher {
       [pr.repo, pr.number],
     );
     const seen = new Set<number>();
+    const failures = new Map<number, number>();
     let active = false;
     for (const { payload, status } of rows) {
-      for (const id of payload.review_ids ?? []) seen.add(id);
-      if (payload.review_id !== undefined) seen.add(payload.review_id);
-      if (payload.type === "review_followup" && !["done", "failed", "cancelled"].includes(status)) active = true;
+      if (payload.review_id !== undefined) seen.add(payload.review_id); // review_ignored
+      if (payload.type !== "review_followup") continue;
+      if (!["done", "failed", "cancelled"].includes(status)) active = true;
+      for (const id of payload.review_ids ?? []) {
+        if (status !== "failed") seen.add(id);
+        else failures.set(id, (failures.get(id) ?? 0) + 1);
+      }
     }
+    for (const [id, n] of failures) if (n >= MAX_FOLLOWUPS_PER_REVIEW) seen.add(id);
     return { seen, active };
   }
 
   private async check(pr: WatchedPr): Promise<string | null> {
+    const key = `${pr.repo}#${pr.number}`;
+    const now = (this.deps.now ?? Date.now)();
+    if (pr.closed && now - (this.closedCheckedAt.get(key) ?? -Infinity) < (this.deps.closedRecheckMs ?? 15 * 60_000)) return null;
+
     const { seen, active } = await this.handled(pr);
     if (active) return null;
 
     const info = await this.deps.prs.getPullRequest(pr.repo, pr.number);
     const ref = { repo: pr.repo, number: pr.number };
     if (info.state !== "open") {
-      await this.store.record(pr.task_id, "note", this.deps.owner, { type: "pr_closed", pr: ref });
+      this.closedCheckedAt.set(key, now);
+      if (!pr.closed) await this.store.record(pr.task_id, "note", this.deps.owner, { type: "pr_closed", pr: ref });
       return null;
     }
+    this.closedCheckedAt.delete(key);
+    if (pr.closed) await this.store.record(pr.task_id, "note", this.deps.owner, { type: "pr_reopened", pr: ref });
 
     const fresh = (await this.deps.prs.listReviews(pr.repo, pr.number)).filter(
       (r) => !seen.has(r.id) && ACTIONABLE.has(r.state) && !r.author.endsWith("[bot]"),
