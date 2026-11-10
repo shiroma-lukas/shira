@@ -142,7 +142,11 @@ export interface TransitionOptions {
 export class TaskStore {
   constructor(private readonly db: Db) {}
 
-  async create(input: NewTask, actor: string): Promise<Task> {
+  /**
+   * Queues a task. `notes` are recorded in the same transaction, so a dispatcher that
+   * claims the task right away already sees them (e.g. a review follow-up's PR).
+   */
+  async create(input: NewTask, actor: string, notes: Record<string, unknown>[] = []): Promise<Task> {
     const t = NewTask.parse(input);
     return this.db.transaction(async (tx) => {
       const repo = await tx.query<{ enabled: boolean }>("SELECT enabled FROM repos WHERE repo = $1", [t.repo]);
@@ -172,6 +176,7 @@ export class TaskStore {
         await tx.query("INSERT INTO task_dependencies (task_id, blocked_by_id) VALUES ($1, $2)", [task.id, dep]);
       }
       await appendEvent(tx, task.id, "state_change", actor, { to: "queued" });
+      for (const note of notes) await appendEvent(tx, task.id, "note", actor, { payload: note });
       return task;
     });
   }

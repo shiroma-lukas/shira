@@ -20,6 +20,40 @@ export interface Issue {
   author?: string;
 }
 
+export interface PullRequestInfo {
+  number: number;
+  state: "open" | "closed";
+  url: string;
+  head: { ref: string; sha: string };
+}
+
+export type ReviewState = "COMMENTED" | "CHANGES_REQUESTED" | "APPROVED" | "DISMISSED" | "PENDING";
+
+export interface Review {
+  id: number;
+  /** GitHub login of the reviewer. */
+  author: string;
+  /** GitHub's author_association: OWNER, MEMBER, COLLABORATOR, CONTRIBUTOR, NONE, ... */
+  association: string;
+  state: ReviewState;
+  body: string;
+  url: string;
+}
+
+export interface ReviewComment {
+  path: string;
+  line: number | null;
+  body: string;
+  diffHunk: string;
+}
+
+/** Reads pull requests and their reviews (FR-H5). Production: the GitHub App (Pull requests: read). */
+export interface PullRequests {
+  getPullRequest(repo: string, number: number): Promise<PullRequestInfo>;
+  listReviews(repo: string, number: number): Promise<Review[]>;
+  reviewComments(repo: string, number: number, reviewId: number): Promise<ReviewComment[]>;
+}
+
 /** Reads and comments on issues. Production: the GitHub App (needs Issues: read and write). */
 export interface IssueTracker {
   getIssue(repo: string, number: number): Promise<Issue>;

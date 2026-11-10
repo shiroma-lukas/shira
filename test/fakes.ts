@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HarnessAdapter, ResumeInput, RunOutcome, SessionHandle, StartInput } from "../src/contracts/adapter.js";
 import type { Reply } from "../src/contracts/index.js";
-import type { CodeHost, Issue, IssueTracker } from "../src/dispatcher/pr.js";
+import type { CodeHost, Issue, IssueTracker, PullRequestInfo, PullRequests, Review, ReviewComment } from "../src/dispatcher/pr.js";
 import { sh } from "../src/sandbox/process.js";
 
 export type StepInput = (StartInput | ResumeInput) & {
@@ -76,8 +76,14 @@ export class ScriptedAdapter implements HarnessAdapter {
   }
 }
 
-export class FakeCodeHost implements CodeHost, IssueTracker {
+export class FakeCodeHost implements CodeHost, IssueTracker, PullRequests {
   readonly prs: { repo: string; head: string; base: string; title: string; body: string }[] = [];
+  /** Set to read PR head commits from a real origin repo. */
+  origin?: string;
+  readonly prStates = new Map<number, "open" | "closed">();
+  /** Reviews per PR number, and inline comments per review id. */
+  readonly reviews = new Map<number, Review[]>();
+  readonly reviewCommentsById = new Map<number, ReviewComment[]>();
   readonly comments: { repo: string; number: number; body: string }[] = [];
   readonly issues = new Map<string, Issue>();
   /** Errors thrown by the next openPullRequest calls, in order. */
@@ -98,6 +104,21 @@ export class FakeCodeHost implements CodeHost, IssueTracker {
 
   async comment(repo: string, number: number, body: string) {
     this.comments.push({ repo, number, body });
+  }
+
+  async getPullRequest(repo: string, number: number): Promise<PullRequestInfo> {
+    const pr = this.prs[number - 1];
+    if (!pr) throw new Error(`no PR ${repo}#${number}`);
+    const sha = this.origin ? (await sh(`git rev-parse refs/heads/${pr.head}`, this.origin)).stdout.trim() : "0".repeat(40);
+    return { number, state: this.prStates.get(number) ?? "open", url: `https://example.test/${repo}/pull/${number}`, head: { ref: pr.head, sha } };
+  }
+
+  async listReviews(_repo: string, number: number): Promise<Review[]> {
+    return this.reviews.get(number) ?? [];
+  }
+
+  async reviewComments(_repo: string, _number: number, reviewId: number): Promise<ReviewComment[]> {
+    return this.reviewCommentsById.get(reviewId) ?? [];
   }
 }
 

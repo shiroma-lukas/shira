@@ -9,6 +9,7 @@ import { loadPeople, syncIdentities } from "../people/people.js";
 import { ClaudeCodeAdapter } from "../harness/claude-code.js";
 import { harnessAccessFromEnv } from "../harness/providers.js";
 import { OpenRouterPriceTable } from "../ledger/prices.js";
+import { ReviewWatcher } from "../dispatcher/reviews.js";
 import { transcriptStoreFromEnv } from "../harness/transcripts.js";
 import { EgressAdminClient } from "../egress/proxy.js";
 import { DockerSandboxProvider } from "../sandbox/docker.js";
@@ -84,6 +85,7 @@ export async function runDispatcher(
     await openRouterPrices.refresh().catch((err: Error) => log("price refresh failed", { error: err.message }));
   }
 
+  const owner = `dispatcher-${hostname()}-${process.pid}`;
   const dispatcher = new Dispatcher({
     db,
     config,
@@ -101,8 +103,11 @@ export async function runDispatcher(
     codeHost: github,
     credentials: github,
     issues: github,
+    prs: github,
+    // Review feedback on Shira's PRs becomes follow-up tasks (FR-H5), polled every minute.
+    reviews: new ReviewWatcher({ db, config, prs: github, people: people.people, owner, log }),
     instructions: contextLoader(contextDir),
-    owner: `dispatcher-${hostname()}-${process.pid}`,
+    owner,
     log,
   });
   console.log(

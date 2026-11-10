@@ -15,9 +15,8 @@ describe("shira_app role", () => {
     // Denied by the grant, before the append-only trigger is even reached.
     await expect(db.query("UPDATE task_events SET actor = 'x'")).rejects.toThrow(/permission denied/);
     await expect(db.query("DELETE FROM task_events WHERE task_id = $1", [task.id])).rejects.toThrow(/permission denied/);
-    await expect(db.query("INSERT INTO decisions (id, record_ref, approver_id) VALUES ('D-0001', 'x', 'y')")).rejects.toThrow(
-      /permission denied/,
-    );
+    // Decision records are inserted (M2-C) but never deleted.
+    await expect(db.query("DELETE FROM decisions")).rejects.toThrow(/permission denied/);
     await expect(db.exec("DROP TRIGGER task_events_append_only ON task_events")).rejects.toThrow(/must be owner/);
     await expect(db.exec("ALTER TABLE tasks ADD COLUMN x int")).rejects.toThrow(/must be owner/);
     await expect(db.exec("CREATE TABLE sneaky (id int)")).rejects.toThrow(/permission denied/);
