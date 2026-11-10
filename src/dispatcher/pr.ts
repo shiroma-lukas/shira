@@ -23,6 +23,8 @@ export interface Issue {
 export interface PullRequestInfo {
   number: number;
   state: "open" | "closed";
+  /** Closed by merging: it can't reopen. */
+  merged: boolean;
   url: string;
   head: { ref: string; sha: string };
 }

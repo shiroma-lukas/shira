@@ -80,7 +80,7 @@ export class FakeCodeHost implements CodeHost, IssueTracker, PullRequests {
   readonly prs: { repo: string; head: string; base: string; title: string; body: string }[] = [];
   /** Set to read PR head commits from a real origin repo. */
   origin?: string;
-  readonly prStates = new Map<number, "open" | "closed">();
+  readonly prStates = new Map<number, "open" | "closed" | "merged">();
   /** Reviews per PR number, and inline comments per review id. */
   readonly reviews = new Map<number, Review[]>();
   readonly reviewCommentsById = new Map<number, ReviewComment[]>();
@@ -110,7 +110,8 @@ export class FakeCodeHost implements CodeHost, IssueTracker, PullRequests {
     const pr = this.prs[number - 1];
     if (!pr) throw new Error(`no PR ${repo}#${number}`);
     const sha = this.origin ? (await sh(`git rev-parse refs/heads/${pr.head}`, this.origin)).stdout.trim() : "0".repeat(40);
-    return { number, state: this.prStates.get(number) ?? "open", url: `https://example.test/${repo}/pull/${number}`, head: { ref: pr.head, sha } };
+    const state = this.prStates.get(number) ?? "open";
+    return { number, state: state === "merged" ? "closed" : state, merged: state === "merged", url: `https://example.test/${repo}/pull/${number}`, head: { ref: pr.head, sha } };
   }
 
   async listReviews(_repo: string, number: number): Promise<Review[]> {

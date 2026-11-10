@@ -297,9 +297,10 @@ export class GitHubApp implements CodeHost, IssueTracker, RepoCredentials, PullR
     return this.conditionalGet(
       `/repos/${repo}/pulls/${number}`,
       `token ${token}`,
-      (p: { number: number; state: "open" | "closed"; html_url: string; head: { ref: string; sha: string } }): PullRequestInfo => ({
+      (p: { number: number; state: "open" | "closed"; merged: boolean; html_url: string; head: { ref: string; sha: string } }): PullRequestInfo => ({
         number: p.number,
         state: p.state,
+        merged: p.merged,
         url: p.html_url,
         head: { ref: p.head.ref, sha: p.head.sha },
       }),
