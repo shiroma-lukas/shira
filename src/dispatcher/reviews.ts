@@ -2,6 +2,7 @@ import type { LoadedConfig } from "../config/load.js";
 import type { Scope } from "../contracts/index.js";
 import type { Db } from "../db/client.js";
 import type { People } from "../people/people.js";
+import { Settings } from "../queue/settings.js";
 import { TaskStore } from "../queue/store.js";
 import type { PullRequests, Review } from "./pr.js";
 
@@ -40,6 +41,9 @@ interface WatchedPr {
  */
 export class ReviewWatcher {
   private readonly store: TaskStore;
+  private readonly settings: Settings;
+  /** The poll in progress, if any: the lease renews for its own holder, so it can't stop a second poll in this process. */
+  private inFlight: Promise<string[]> | null = null;
 
   constructor(
     private readonly deps: {
@@ -54,10 +58,25 @@ export class ReviewWatcher {
     },
   ) {
     this.store = new TaskStore(deps.db);
+    this.settings = new Settings(deps.db);
   }
 
-  /** One polling round. Returns the follow-up tasks it created. */
-  async poll(): Promise<string[]> {
+  /**
+   * One polling round. Returns the follow-up tasks it created. A call while a round is
+   * still running creates nothing: two overlapping rounds could both queue a follow-up
+   * for the same reviews.
+   */
+  poll(): Promise<string[]> {
+    if (this.inFlight) return Promise.resolve([]);
+    this.inFlight = this.pollOnce().finally(() => {
+      this.inFlight = null;
+    });
+    return this.inFlight;
+  }
+
+  private async pollOnce(): Promise<string[]> {
+    // The kill switch revoked GitHub tokens (FR-S4); polling would mint new ones and queue work.
+    if (await this.settings.agentsPaused()) return [];
     if (!(await this.acquireLease())) return [];
     const created: string[] = [];
     for (const pr of await this.watched()) {

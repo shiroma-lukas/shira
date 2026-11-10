@@ -14,6 +14,7 @@ import { formatUsd, Ledger } from "../ledger/ledger.js";
 import { submit } from "../queue/intake.js";
 import { Settings } from "../queue/settings.js";
 import { githubFromEnv, runDispatcher, type SandboxMode } from "./dispatch.js";
+import type { GitHubApp } from "../github/app.js";
 import { loadDotEnv } from "./env.js";
 import { linkLines } from "./show.js";
 import { TaskStore, type Task } from "../queue/store.js";
@@ -235,9 +236,19 @@ async function main(db: Db, argv: string[]): Promise<void> {
       }
       const people = await peopleOrFail();
       await syncIdentities(db, people);
-      const context = contextRepo();
+      // A broken GitHub setup must not lose the approval: record it, and propose it later.
+      const contextRef = contextRepo();
+      let context: { changes: GitHubApp; repo: NonNullable<typeof contextRef> } | undefined;
+      let setupError: string | null = null;
+      if (contextRef) {
+        try {
+          context = { changes: await githubFromEnv(), repo: contextRef };
+        } catch (err) {
+          setupError = `GitHub App setup failed: ${(err as Error).message}`;
+        }
+      }
       const r = await recordDecision(
-        { db, people, ...(context ? { context: { changes: await githubFromEnv(), repo: context } } : {}) },
+        { db, people, ...(context ? { context } : {}) },
         {
           title: values.title,
           what: values.what,
@@ -252,7 +263,7 @@ async function main(db: Db, argv: string[]): Promise<void> {
       );
       console.log(`${r.decision.id}  ${r.decision.recordRef}  approved by ${r.decision.approver}`);
       if (r.contextPr) console.log(`context PR: ${r.contextPr.url}`);
-      else console.log(`not proposed to the context repo: ${r.contextError}. Retry with \`shira decision ${r.decision.id} --propose\`.`);
+      else console.log(`not proposed to the context repo: ${setupError ?? r.contextError}. Retry with \`shira decision ${r.decision.id} --propose\`.`);
       console.log(`implement it with: shira submit --repo ${values.repo} --decision ${r.decision.id} --goal "..."`);
       return;
     }

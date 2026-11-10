@@ -106,12 +106,19 @@ export function decisionComment(taskId: string, short: string, raw: unknown): st
 
 /**
  * A review follow-up being worked on: it updates an existing PR's branch instead of
- * opening a new PR, starting from `startSha`, which the push leases against so commits
- * a reviewer pushed meanwhile are never overwritten.
+ * opening a new PR.
  */
 interface FollowUpRun {
   note: ReviewFollowUp;
+  /**
+   * The PR's head when this attempt started. The run starts from it, even when resuming
+   * (a checkpoint's commits were pushed to the PR branch, so the head contains them), and
+   * pushes lease against it, so commits a reviewer pushed meanwhile are never overwritten:
+   * a refused push is retried from the new head.
+   */
   startSha: string;
+  /** The PR's head when the follow-up's first attempt started: its own commits come after it. */
+  baseline: string;
 }
 
 /** A PR whose branch passed the gate and was pushed, waiting to be opened. */
@@ -301,8 +308,8 @@ export class Dispatcher {
       }
       if (pr.state !== "open") return (await this.fail(task, { reason: `PR #${pr.number} is no longer open` })).status;
       branch = pr.head.ref;
-      startSha ??= pr.head.sha;
-      followUp = { note, startSha };
+      startSha = pr.head.sha;
+      followUp = { note, startSha, baseline: await this.followUpBaseline(task.id, startSha) };
     }
 
     let harness: HarnessAccess | undefined;
@@ -539,8 +546,9 @@ export class Dispatcher {
     }
 
     await sandbox.exec(`git fetch --quiet origin ${q(base)}`, { auth: "read" });
-    // A follow-up's branch already differs from base: it must add commits of its own.
-    const since = followUp ? followUp.startSha : `origin/${base}`;
+    // A follow-up's branch already differs from base: it must add commits of its own,
+    // counting those it pushed with a checkpoint before pausing.
+    const since = followUp ? followUp.baseline : `origin/${base}`;
     if ((await git(`git rev-list --count ${q(since)}..HEAD`)).stdout.trim() === "0") {
       return (await this.fail(task, { reason: "no changes to propose", summary: reply.summary, reply_id: reply.id })).status;
     }
@@ -665,6 +673,19 @@ export class Dispatcher {
   }
 
   /** The review follow-up note a task was created with, if it is one. */
+  /** The PR head a follow-up first started from, recorded on its first attempt. */
+  private async followUpBaseline(taskId: string, head: string): Promise<string> {
+    const { rows } = await this.deps.db.query<{ sha: string }>(
+      `SELECT payload->>'sha' AS sha FROM task_events
+       WHERE task_id = $1 AND kind = 'note' AND payload->>'type' = 'followup_start'
+       ORDER BY id LIMIT 1`,
+      [taskId],
+    );
+    if (rows[0]) return rows[0].sha;
+    await this.store.record(taskId, "note", this.deps.owner, { type: "followup_start", sha: head });
+    return head;
+  }
+
   private async followUpOf(taskId: string): Promise<ReviewFollowUp | null> {
     const { rows } = await this.deps.db.query<{ payload: ReviewFollowUp }>(
       `SELECT payload FROM task_events

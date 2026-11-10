@@ -9,6 +9,7 @@ import { Dispatcher } from "../src/dispatcher/dispatcher.js";
 import type { Review } from "../src/dispatcher/pr.js";
 import { ReviewWatcher } from "../src/dispatcher/reviews.js";
 import { People } from "../src/people/people.js";
+import { Settings } from "../src/queue/settings.js";
 import { TaskStore, type Task } from "../src/queue/store.js";
 import { LocalSandboxProvider } from "../src/sandbox/local.js";
 import { sh } from "../src/sandbox/process.js";
@@ -155,6 +156,19 @@ describe("review follow-ups (FR-H5)", () => {
     expect(await watcher().poll()).toEqual([]);
   });
 
+  /** A reviewer pushes a commit of their own to the PR branch. */
+  async function reviewerPushes(branch: string) {
+    const clone = await mkdtemp(join(tmpdir(), "shira-reviewer-"));
+    for (const cmd of [
+      `git clone --quiet ${origin} . && git checkout --quiet ${branch}`,
+      "git -c user.name=r -c user.email=r@x commit --quiet --allow-empty -m 'reviewer tweak'",
+      `git push --quiet origin HEAD:refs/heads/${branch}`,
+    ]) {
+      const r = await sh(cmd, clone);
+      if (r.code !== 0) throw new Error(r.stderr);
+    }
+  }
+
   it("never overwrites a reviewer's own push: the follow-up is retried from the new head", async () => {
     await openedPr();
     const branch = host.prs[0]!.head;
@@ -162,16 +176,7 @@ describe("review follow-ups (FR-H5)", () => {
     const [id] = await watcher().poll();
 
     const raced: Step = async (input) => {
-      // The reviewer pushes to the PR branch while the agent works.
-      const clone = await mkdtemp(join(tmpdir(), "shira-reviewer-"));
-      for (const cmd of [
-        `git clone --quiet ${origin} . && git checkout --quiet ${branch}`,
-        "git -c user.name=r -c user.email=r@x commit --quiet --allow-empty -m 'reviewer tweak'",
-        `git push --quiet origin HEAD:refs/heads/${branch}`,
-      ]) {
-        const r = await sh(cmd, clone);
-        if (r.code !== 0) throw new Error(r.stderr);
-      }
+      await reviewerPushes(branch); // while the agent works
       return commit("echo notes > notes.txt", "Added notes.")(input);
     };
     expect(await dispatcher([raced]).tick()).toMatchObject({ taskId: id, status: "queued" });
@@ -179,6 +184,32 @@ describe("review follow-ups (FR-H5)", () => {
 
     expect(await dispatcher([commit("echo notes > notes.txt", "Added notes.")]).tick()).toMatchObject({ status: "done" });
     expect(await originLog(branch)).toEqual(["Added notes.", "reviewer tweak", "Fixed app.txt.", "init"]);
+  });
+
+  it("resumes a paused follow-up from the PR's current head, keeping the work it pushed before pausing", async () => {
+    await openedPr();
+    const branch = host.prs[0]!.head;
+    host.reviews.set(1, [review({ id: 45 })]);
+    const [id] = await watcher().poll();
+
+    const ask: Step = async ({ exec }) => {
+      await exec("echo notes > notes.txt && git add -A && git commit --quiet -m 'Added notes.'");
+      return { status: "needs_decision", summary: "Need a choice.", question: { kind: "technical", text: "Keep it?", options: ["yes", "no"], refs: [] } };
+    };
+    // Everything was done before the pause; the resumed run only confirms it.
+    const confirm: Step = async ({ exec }) => ({
+      status: "done",
+      summary: "Notes added.",
+      artifact: { kind: "commit", repo: "o/r", branch: "x", sha: await exec("git rev-parse HEAD") },
+    });
+    const d = dispatcher([ask, confirm]);
+    expect(await d.tick()).toMatchObject({ taskId: id, status: "needs_decision" });
+    await reviewerPushes(branch); // while the task waits on a human
+
+    const question = (await store.events(id!)).find((e) => e.toStatus === "needs_decision")!;
+    await store.answer({ v: 1, task_id: id!, in_reply_to: question.payload.reply_id as string, answered_by: "ana", text: "Yes", choice: 0 });
+    expect(await d.tick()).toMatchObject({ taskId: id, status: "done" });
+    expect(await originLog(branch)).toEqual(["reviewer tweak", "Added notes.", "Fixed app.txt.", "init"]);
   });
 
   it("fails a follow-up that adds no commits and says why on the PR", async () => {
@@ -192,6 +223,26 @@ describe("review follow-ups (FR-H5)", () => {
     });
     expect(await dispatcher([nothing]).tick()).toMatchObject({ taskId: id, status: "failed" });
     expect(host.comments.at(-1)!.body).toMatch(/couldn't address the review from @ana-dev[\s\S]*no changes to propose[\s\S]*Already handled/);
+  });
+
+  it("creates nothing when a poll starts while another is still running", async () => {
+    await openedPr();
+    host.reviews.set(1, [review({ id: 63 })]);
+    const w = watcher();
+    const [first, second] = await Promise.all([w.poll(), w.poll()]);
+    expect(first).toHaveLength(1);
+    expect(second).toEqual([]);
+    expect(await w.poll()).toEqual([]); // the guard clears once the poll ends; the follow-up is still unfinished
+  });
+
+  it("doesn't poll while the kill switch is on", async () => {
+    await openedPr();
+    host.reviews.set(1, [review({ id: 64 })]);
+    const settings = new Settings(db);
+    await settings.setAgentsPaused(true, "cli:test");
+    expect(await watcher().poll()).toEqual([]);
+    await settings.setAgentsPaused(false, "cli:test");
+    expect(await watcher().poll()).toHaveLength(1);
   });
 
   it("lets one dispatcher poll at a time", async () => {
