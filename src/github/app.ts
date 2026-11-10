@@ -19,6 +19,12 @@ const PERMISSIONS: Record<TokenPurpose, Record<string, "read" | "write">> = {
 /** Refresh tokens this long before GitHub expires them (they live one hour). */
 const REFRESH_MARGIN_MS = 5 * 60_000;
 
+/** Conditional GET responses kept for revalidation; the oldest go first past this. */
+const MAX_CACHED_RESPONSES = 2000;
+const PAGE_SIZE = 100;
+/** 50 pages of 100 is far past any real PR. */
+const MAX_PAGES = 50;
+
 export interface GitHubAppOptions {
   appId: string;
   /** PEM private key generated for the GitHub App. */
@@ -60,6 +66,8 @@ export class GitHubApp implements CodeHost, IssueTracker, RepoCredentials, PullR
   private readonly now: () => number;
   private readonly installations = new Map<string, number>();
   private readonly tokens = new Map<string, { token: string; expiresAt: number }>();
+  /** Last response per GET url, with its ETag, for conditional requests. */
+  private readonly cached = new Map<string, { etag: string; body: unknown }>();
 
   constructor(private readonly opts: GitHubAppOptions) {
     this.api = (opts.apiUrl ?? "https://api.github.com").replace(/\/$/, "");
@@ -91,6 +99,58 @@ export class GitHubApp implements CodeHost, IssueTracker, RepoCredentials, PullR
     });
     if (!res.ok) throw new GitHubError(method, path, res.status, (await res.text()).slice(0, 500));
     return (res.status === 204 ? undefined : await res.json()) as T;
+  }
+
+  /**
+   * A GET that revalidates its last response with If-None-Match. GitHub doesn't count a
+   * 304 against the rate limit, so polling something that hasn't changed is free. The
+   * ETag depends on the token, so a refreshed token costs one full response.
+   */
+  private async conditionalGet<T>(path: string, auth: string): Promise<T> {
+    const url = `${this.api}${path}`;
+    const prior = this.cached.get(url);
+    const res = await this.fetch(url, {
+      method: "GET",
+      headers: {
+        accept: "application/vnd.github+json",
+        authorization: auth,
+        "x-github-api-version": "2022-11-28",
+        "user-agent": "shira",
+        ...(prior ? { "if-none-match": prior.etag } : {}),
+      },
+    });
+    if (res.status === 304 && prior) {
+      // Re-insert to keep recently used entries last, so the oldest are evicted first.
+      this.cached.delete(url);
+      this.cached.set(url, prior);
+      return prior.body as T;
+    }
+    if (!res.ok) throw new GitHubError("GET", path, res.status, (await res.text()).slice(0, 500));
+    const body = (await res.json()) as T;
+    const etag = res.headers.get("etag");
+    this.cached.delete(url);
+    if (etag) {
+      this.cached.set(url, { etag, body });
+      if (this.cached.size > MAX_CACHED_RESPONSES) this.cached.delete(this.cached.keys().next().value!);
+    }
+    return body;
+  }
+
+  /**
+   * Every page of a list endpoint whose items only get appended (reviews, review comments),
+   * each page revalidated on its own. Pages are numbered rather than followed through the
+   * Link header: a full first page answers 304 when a second page appears, and a 304 needn't
+   * carry the new Link. A full page always means asking for the next one.
+   */
+  private async paginated<T>(path: string, auth: string): Promise<T[]> {
+    const items: T[] = [];
+    const sep = path.includes("?") ? "&" : "?";
+    for (let page = 1; ; page++) {
+      if (page > MAX_PAGES) throw new Error(`GitHub GET ${path}: more than ${MAX_PAGES} pages`);
+      const batch = await this.conditionalGet<T[]>(`${path}${sep}per_page=${PAGE_SIZE}&page=${page}`, auth);
+      items.push(...batch);
+      if (batch.length < PAGE_SIZE) return items;
+    }
   }
 
   private async installationId(repo: string): Promise<number> {
@@ -244,8 +304,7 @@ export class GitHubApp implements CodeHost, IssueTracker, RepoCredentials, PullR
 
   async getPullRequest(repo: string, number: number): Promise<PullRequestInfo> {
     const token = await this.token(repo, "reviews");
-    const p = await this.request<{ number: number; state: "open" | "closed"; html_url: string; head: { ref: string; sha: string } }>(
-      "GET",
+    const p = await this.conditionalGet<{ number: number; state: "open" | "closed"; html_url: string; head: { ref: string; sha: string } }>(
       `/repos/${repo}/pulls/${number}`,
       `token ${token}`,
     );
@@ -254,9 +313,14 @@ export class GitHubApp implements CodeHost, IssueTracker, RepoCredentials, PullR
 
   async listReviews(repo: string, number: number): Promise<Review[]> {
     const token = await this.token(repo, "reviews");
-    const reviews = await this.request<
-      { id: number; user: { login: string } | null; author_association: string; state: Review["state"]; body: string | null; html_url: string }[]
-    >("GET", `/repos/${repo}/pulls/${number}/reviews?per_page=100`, `token ${token}`);
+    const reviews = await this.paginated<{
+      id: number;
+      user: { login: string } | null;
+      author_association: string;
+      state: Review["state"];
+      body: string | null;
+      html_url: string;
+    }>(`/repos/${repo}/pulls/${number}/reviews`, `token ${token}`);
     return reviews.map((r) => ({
       id: r.id,
       author: r.user?.login ?? "ghost",
@@ -269,9 +333,8 @@ export class GitHubApp implements CodeHost, IssueTracker, RepoCredentials, PullR
 
   async reviewComments(repo: string, number: number, reviewId: number): Promise<ReviewComment[]> {
     const token = await this.token(repo, "reviews");
-    const comments = await this.request<{ path: string; line: number | null; body: string; diff_hunk: string }[]>(
-      "GET",
-      `/repos/${repo}/pulls/${number}/reviews/${reviewId}/comments?per_page=100`,
+    const comments = await this.paginated<{ path: string; line: number | null; body: string; diff_hunk: string }>(
+      `/repos/${repo}/pulls/${number}/reviews/${reviewId}/comments`,
       `token ${token}`,
     );
     return comments.map((c) => ({ path: c.path, line: c.line, body: c.body, diffHunk: c.diff_hunk }));
