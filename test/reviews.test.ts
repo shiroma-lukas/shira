@@ -166,17 +166,21 @@ describe("review follow-ups (FR-H5)", () => {
     expect(await notes(original, "pr_closed")).toHaveLength(1); // still closed checks record nothing new
   });
 
-  it("offers a review again when its follow-up fails, once", async () => {
+  it("offers a review again when its follow-up runs out of retries, once", async () => {
     await openedPr();
     host.reviews.set(1, [review({ id: 35 })]);
-    const failed = async () => {
+    // Breaks the repo's test, so the gate retries the task until its retries run out.
+    const breaks = commit("echo broken > app.txt", "Broke app.txt.");
+    const failsTwice = async () => {
       const [id] = await watcher().poll();
       expect(id).toBeDefined();
-      await db.query("UPDATE tasks SET status = 'failed' WHERE id = $1", [id]);
+      const d = dispatcher([breaks, breaks]);
+      expect(await d.tick()).toMatchObject({ taskId: id, status: "queued" });
+      expect(await d.tick()).toMatchObject({ taskId: id, status: "failed" });
       return id!;
     };
-    const first = await failed();
-    const second = await failed();
+    const first = await failsTwice();
+    const second = await failsTwice();
     expect(second).not.toBe(first);
     expect(await watcher().poll()).toEqual([]); // two follow-ups failed: dropped
 
@@ -184,6 +188,30 @@ describe("review follow-ups (FR-H5)", () => {
     host.reviews.set(1, [review({ id: 35 }), review({ id: 36 })]);
     const [third] = await watcher().poll();
     expect((await notes((await store.get(third!))!, "review_followup"))[0]).toMatchObject({ review_ids: [36] });
+  });
+
+  it("doesn't offer a review again after a failure that would only repeat", async () => {
+    await openedPr();
+    host.reviews.set(1, [review({ id: 37 })]);
+    const [id] = await watcher().poll();
+    const nothing: Step = async ({ exec }) => ({
+      status: "done",
+      summary: "Nothing to change.",
+      artifact: { kind: "commit", repo: "o/r", branch: "x", sha: await exec("git rev-parse HEAD") },
+    });
+    expect(await dispatcher([nothing]).tick()).toMatchObject({ taskId: id, status: "failed" }); // no changes to propose
+    expect(await watcher().poll()).toEqual([]);
+  });
+
+  it("stops watching a PR once it merges", async () => {
+    const original = await openedPr();
+    host.prStates.set(1, "merged");
+    expect(await watcher().poll()).toEqual([]);
+    expect(await notes(original, "pr_closed")).toEqual([{ type: "pr_closed", pr: { repo: "o/r", number: 1 }, merged: true }]);
+    clock += 60 * 60_000;
+    host.prStates.set(1, "open"); // can't happen for a merged PR; shows it isn't asked again
+    host.reviews.set(1, [review({ id: 38 })]);
+    expect(await watcher().poll()).toEqual([]);
   });
 
   /** A reviewer pushes a commit of their own to the PR branch. */

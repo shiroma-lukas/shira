@@ -196,15 +196,18 @@ When someone reviews a PR Shira opened, the worker answers it on the same PR (PR
    repo's `identities.yaml` or can push to the repo (owner, member, collaborator). Anyone
    else's review is recorded on the task and ignored. Approvals, bot reviews, and empty
    comments need no action.
-   A closed PR is checked only every 15 minutes, and is watched again if it reopens.
+   A merged PR is no longer watched. One closed without merging is checked only every
+   15 minutes, and is watched again if it reopens.
 3. The pending reviews become one follow-up task, with at most one unfinished per PR.
    The worker gets the review text and inline comments as untrusted input, works on the
    PR's branch, and must add commits of its own.
 4. The gate runs as usual, then pushes to the PR branch only if nobody else pushed to it
    meanwhile (`--force-with-lease`); otherwise the task is retried from the new head.
    Shira comments on the PR with the commit it pushed, or why it couldn't.
-5. If the follow-up fails, its reviews are offered again in one more follow-up; after a
-   second failure they're dropped. Cancelling a follow-up drops its reviews at once.
+5. If the follow-up fails after using up its retries, its reviews are offered again in one
+   more follow-up; after a second failure they're dropped. A failure that would only
+   repeat (no changes, a secret or out-of-scope change in the diff, bad configuration)
+   drops them at once, and so does cancelling the follow-up.
 
 The follow-up rebases the branch on the default branch like any task, so reviewers may see
 a force push. Plain conversation comments on the PR don't start a follow-up; submit them as
