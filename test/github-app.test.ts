@@ -1,4 +1,4 @@
-import { createPublicKey, createVerify, generateKeyPairSync } from "node:crypto";
+import { createHash, createPublicKey, createVerify, generateKeyPairSync } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -140,13 +140,25 @@ describe("GitHubApp", () => {
     expect(gh.calls.filter((c) => c.url.includes("/comments")).map((c) => c.query.get("page"))).toEqual(["1", "2"]);
   });
 
+  it("stops reading at 50 pages instead of failing", async () => {
+    const review = (id: number) => ({ id, user: { login: "ana" }, author_association: "MEMBER", state: "COMMENTED", body: "", html_url: `u${id}` });
+    const gh = fakeGitHub({
+      ...tokenRoutes(() => new Date(Date.now() + 3600_000).toISOString()),
+      // Every page is full, forever.
+      "GET /repos/acme/web/pulls/4/reviews": (c) => ({ body: Array.from({ length: 100 }, (_, i) => review(Number(c.query.get("page")) * 1000 + i)) }),
+    });
+    const app = new GitHubApp({ appId: "123", privateKey, fetch: gh.fetchImpl });
+    expect(await app.listReviews("acme/web", 4)).toHaveLength(5000);
+    expect(gh.calls.filter((c) => c.url.includes("/reviews")).at(-1)!.query.get("page")).toBe("50");
+  });
+
   it("revalidates PR and review reads with ETags, and still sees a new page behind an unchanged one", async () => {
     const review = (id: number) => ({ id, user: { login: "ana" }, author_association: "MEMBER", state: "COMMENTED", body: "", html_url: `u${id}` });
     let reviews = Array.from({ length: 100 }, (_, i) => review(i + 1));
     let head = "a".repeat(40);
     /** Answers 304 when the client already has this version. */
     const versioned = (call: Call, body: unknown) => {
-      const etag = `"${JSON.stringify(body).length}-${JSON.stringify(body).slice(-20)}"`;
+      const etag = `"${createHash("sha256").update(JSON.stringify(body)).digest("hex")}"`;
       return call.ifNoneMatch === etag ? { status: 304, etag } : { body, etag };
     };
     const gh = fakeGitHub({
