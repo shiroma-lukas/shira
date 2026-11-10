@@ -189,7 +189,9 @@ From the concierge (M2) on, approving a proposal in chat records the decision th
 When someone reviews a PR Shira opened, the worker answers it on the same PR (PRD FR-H5):
 
 1. Every minute, one dispatcher checks Shira's open PRs from the last 30 days for new
-   reviews. It uses the GitHub App, so no webhook or public endpoint is needed.
+   reviews. It uses the GitHub App, so no webhook or public endpoint is needed. Each
+   check is a conditional request (`If-None-Match`), and GitHub doesn't count the `304`
+   it gets for a PR with no new activity against the App's rate limit.
 2. A review that comments or requests changes counts if its author is in the context
    repo's `identities.yaml` or can push to the repo (owner, member, collaborator). Anyone
    else's review is recorded on the task and ignored. Approvals, bot reviews, and empty

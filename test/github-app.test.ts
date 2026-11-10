@@ -1,4 +1,4 @@
-import { createPublicKey, createVerify, generateKeyPairSync } from "node:crypto";
+import { createHash, createPublicKey, createVerify, generateKeyPairSync } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -14,23 +14,31 @@ const { privateKey, publicKey } = generateKeyPairSync("rsa", {
   publicKeyEncoding: { type: "spki", format: "pem" },
 });
 
-type Call = { method: string; url: string; auth: string; body: unknown };
+type Call = { method: string; url: string; auth: string; body: unknown; ifNoneMatch?: string; query: URLSearchParams };
+type Routed = { status?: number; body?: unknown; etag?: string };
 
 /** A fake GitHub API: routes by "METHOD path" and records every call. */
-function fakeGitHub(routes: Record<string, (call: Call) => { status?: number; body: unknown }>) {
+function fakeGitHub(routes: Record<string, (call: Call) => Routed>) {
   const calls: Call[] = [];
   const fetchImpl = (async (url: string, init: RequestInit) => {
     const u = new URL(url);
+    const headers = init.headers as Record<string, string>;
     const call: Call = {
       method: init.method!,
       url: u.pathname + u.search,
-      auth: (init.headers as Record<string, string>).authorization!,
+      auth: headers.authorization!,
       body: init.body ? JSON.parse(init.body as string) : undefined,
+      ...(headers["if-none-match"] ? { ifNoneMatch: headers["if-none-match"] } : {}),
+      query: u.searchParams,
     };
     calls.push(call);
     const route = routes[`${call.method} ${u.pathname}`];
-    const { status = 200, body } = route ? route(call) : { status: 404, body: { message: "Not Found" } };
-    return new Response(status === 204 ? null : JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+    const { status = 200, body, etag } = route ? route(call) : { status: 404, body: { message: "Not Found" } };
+    const noBody = status === 204 || status === 304;
+    return new Response(noBody ? null : JSON.stringify(body), {
+      status,
+      headers: { "content-type": "application/json", ...(etag ? { etag } : {}) },
+    });
   }) as typeof fetch;
   return { calls, fetchImpl };
 }
@@ -104,6 +112,80 @@ describe("GitHubApp", () => {
     expect(await app.reviewComments("acme/web", 4, 9)).toEqual([{ path: "a.ts", line: 3, body: "rename", diffHunk: "@@" }]);
     const issued = gh.calls.filter((c) => c.url.endsWith("/access_tokens"));
     expect(issued.map((c) => c.body)).toEqual([{ repositories: ["web"], permissions: { metadata: "read", pull_requests: "read" } }]);
+  });
+
+  it("reads every page of reviews and inline comments", async () => {
+    const review = (id: number) => ({ id, user: { login: "ana" }, author_association: "MEMBER", state: "COMMENTED", body: `r${id}`, html_url: `u${id}` });
+    const reviews = Array.from({ length: 101 }, (_, i) => review(i + 1));
+    const comments = Array.from({ length: 100 }, (_, i) => ({ path: "a.ts", line: i, body: `c${i}`, diff_hunk: "@@" }));
+    const page = <T>(all: T[], call: Call) => {
+      const n = Number(call.query.get("page"));
+      const size = Number(call.query.get("per_page"));
+      return { body: all.slice((n - 1) * size, n * size) };
+    };
+    const gh = fakeGitHub({
+      ...tokenRoutes(() => new Date(Date.now() + 3600_000).toISOString()),
+      "GET /repos/acme/web/pulls/4/reviews": (c) => page(reviews, c),
+      "GET /repos/acme/web/pulls/4/reviews/9/comments": (c) => page(comments, c),
+    });
+    const app = new GitHubApp({ appId: "123", privateKey, fetch: gh.fetchImpl });
+
+    const got = await app.listReviews("acme/web", 4);
+    expect(got).toHaveLength(101);
+    expect(got.at(-1)).toMatchObject({ id: 101, body: "r101" });
+    // Exactly 100 comments: a full page, so the empty second page is asked for too.
+    expect(await app.reviewComments("acme/web", 4, 9)).toHaveLength(100);
+    const pages = (path: string) => gh.calls.filter((c) => c.url.startsWith(path) && !c.url.includes("/comments")).map((c) => c.query.get("page"));
+    expect(pages("/repos/acme/web/pulls/4/reviews?")).toEqual(["1", "2"]);
+    expect(gh.calls.filter((c) => c.url.includes("/comments")).map((c) => c.query.get("page"))).toEqual(["1", "2"]);
+  });
+
+  it("stops reading at 50 pages instead of failing", async () => {
+    const review = (id: number) => ({ id, user: { login: "ana" }, author_association: "MEMBER", state: "COMMENTED", body: "", html_url: `u${id}` });
+    const gh = fakeGitHub({
+      ...tokenRoutes(() => new Date(Date.now() + 3600_000).toISOString()),
+      // Every page is full, forever.
+      "GET /repos/acme/web/pulls/4/reviews": (c) => ({ body: Array.from({ length: 100 }, (_, i) => review(Number(c.query.get("page")) * 1000 + i)) }),
+    });
+    const app = new GitHubApp({ appId: "123", privateKey, fetch: gh.fetchImpl });
+    expect(await app.listReviews("acme/web", 4)).toHaveLength(5000);
+    expect(gh.calls.filter((c) => c.url.includes("/reviews")).at(-1)!.query.get("page")).toBe("50");
+  });
+
+  it("revalidates PR and review reads with ETags, and still sees a new page behind an unchanged one", async () => {
+    const review = (id: number) => ({ id, user: { login: "ana" }, author_association: "MEMBER", state: "COMMENTED", body: "", html_url: `u${id}` });
+    let reviews = Array.from({ length: 100 }, (_, i) => review(i + 1));
+    let head = "a".repeat(40);
+    /** Answers 304 when the client already has this version. */
+    const versioned = (call: Call, body: unknown) => {
+      const etag = `"${createHash("sha256").update(JSON.stringify(body)).digest("hex")}"`;
+      return call.ifNoneMatch === etag ? { status: 304, etag } : { body, etag };
+    };
+    const gh = fakeGitHub({
+      ...tokenRoutes(() => new Date(Date.now() + 3600_000).toISOString()),
+      "GET /repos/acme/web/pulls/4": (c) => versioned(c, { number: 4, state: "open", html_url: "u4", head: { ref: "shira/abc", sha: head } }),
+      "GET /repos/acme/web/pulls/4/reviews": (c) => {
+        const n = Number(c.query.get("page"));
+        return versioned(c, reviews.slice((n - 1) * 100, n * 100));
+      },
+    });
+    const app = new GitHubApp({ appId: "123", privateKey, fetch: gh.fetchImpl });
+    const reads = () => gh.calls.filter((c) => c.method === "GET" && c.url.startsWith("/repos/acme/web/pulls/4"));
+
+    expect((await app.getPullRequest("acme/web", 4)).head.sha).toBe(head);
+    expect(await app.listReviews("acme/web", 4)).toHaveLength(100);
+    const first = reads().length;
+
+    // Nothing changed: every read is revalidated and answered 304, with the same results.
+    expect((await app.getPullRequest("acme/web", 4)).head.sha).toBe(head);
+    expect(await app.listReviews("acme/web", 4)).toHaveLength(100);
+    expect(reads().slice(first).every((c) => c.ifNoneMatch)).toBe(true);
+
+    // A 101st review: page 1 is unchanged (304), and page 2 now has it.
+    reviews = [...reviews, review(101)];
+    head = "b".repeat(40);
+    expect((await app.getPullRequest("acme/web", 4)).head.sha).toBe(head);
+    expect((await app.listReviews("acme/web", 4)).at(-1)).toMatchObject({ id: 101 });
   });
 
   it("proposes context changes on a branch and a PR, never writing to the base branch", async () => {
