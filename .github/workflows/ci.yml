@@ -31,6 +31,27 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm validate-config
+      - name: Generated schemas are up to date
+        run: |
+          pnpm schemas
+          if [ -n "$(git status --porcelain schemas)" ]; then
+            git status --short schemas
+            echo "::error::schemas/ is out of date with src/contracts. Run 'pnpm schemas' and commit the result."
+            exit 1
+          fi
+
+  # Developer Certificate of Origin: every commit in the PR is signed off by its author.
+  dco:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: scripts/check-dco.sh "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}"
+        env:
+          # Only PRs the Shira GitHub App opened; an author email alone could be spoofed.
+          DCO_EXEMPT_AUTHOR_EMAIL: ${{ github.event.pull_request.user.login == 'shira-github-app[bot]' && 'shira-worker@localhost' || '' }}
 
   # The Docker sandbox under real gVisor: isolation, egress allowlist, proxy bypass, kill.
   sandbox:
