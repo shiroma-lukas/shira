@@ -190,6 +190,18 @@ function failureDetail(result: Pick<ResultEvent, "subtype" | "is_error" | "resul
 }
 
 /**
+ * The remaining dollars as Claude Code's `--max-budget-usd` value. Rounded down, never up, so
+ * rounding can't add to the budget. Claude Code rejects 0, which `toFixed(2)` produced for
+ * anything under half a cent: the run failed on a bad argument and was retried. A remainder that
+ * small is clamped to the smallest value, so the run stops after its first API call.
+ */
+export function maxBudgetArg(remainingUsd: number): string {
+  // In units of $0.0001. The epsilon keeps float error (0.29 * 1e4 = 2899.9999…) from losing a unit.
+  const units = Math.floor(remainingUsd * 1e4 + 1e-6);
+  return (Math.max(units, 1) / 1e4).toFixed(4);
+}
+
+/**
  * The repo's CLAUDE.md, relative to the workspace, if it has one. Claude Code reads it from
  * the repo root or `.claude/`; only the first found is passed.
  */
@@ -260,7 +272,8 @@ function renderResume(input: ResumeInput): string {
  *   ANTHROPIC_API_KEY, or for OpenRouter ANTHROPIC_BASE_URL and ANTHROPIC_AUTH_TOKEN
  *   (see `claudeCodeEnv`).
  * - Dollar budget: with Anthropic, `--max-budget-usd` stops the run at the task's
- *   remaining budget. Claude Code can't price other providers' models (it falls back to
+ *   remaining budget. It checks between API calls, so a run can end up to one call's cost
+ *   past it (see docs/providers.md). Claude Code can't price other providers' models (it falls back to
  *   a Claude price, orders of magnitude off for small open models), so for them the
  *   flag is left out and the adapter prices the run from the price table: it watches the
  *   streamed usage and stops the run at the remaining budget itself, and it won't start
@@ -346,7 +359,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
       ...(claudeMd ? ["--append-system-prompt-file", claudeMd] : []),
       "--json-schema",
       JSON.stringify(REPLY_SCHEMA),
-      ...(input.provider === "anthropic" ? ["--max-budget-usd", Math.max(input.remaining.usd, 0).toFixed(2)] : []),
+      ...(input.provider === "anthropic" ? ["--max-budget-usd", maxBudgetArg(input.remaining.usd)] : []),
     ];
     const proc = input.launch(argv);
     const price = input.provider === "anthropic" ? null : (this.opts.prices?.(input.provider, input.model) ?? null);

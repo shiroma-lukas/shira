@@ -46,9 +46,12 @@ retried and then fails the task.
 ## Cost and budgets
 
 - **Anthropic.** Claude Code reports the run's cost, and `--max-budget-usd` stops a run at the
-  task's remaining dollars. It checks between turns, so a run can end up to one turn's cost past
-  the budget: a $0.01 test budget stopped at $0.017. At normal budgets that is a few percent.
-  The task fails with `budget_exceeded` and the spend, and is not retried.
+  task's remaining dollars. It checks between API calls, so a run can end up to one call's cost
+  past the budget: a $0.01 test budget stopped at $0.017 after three calls. The overshoot is the
+  cost of one call, which grows with the context the agent has built up, not with the budget, so
+  a percentage margin wouldn't bound it: it would waste budget on large tasks and still not cover
+  the first call on tiny ones. The task fails with `budget_exceeded` and the spend, and is not
+  retried. The flag's value is the remaining dollars rounded down to $0.0001, never up.
 - **OpenRouter.** Claude Code can't price other models (it guesses a Claude price, which is
   orders of magnitude off for small open models), so its figure is ignored and
   `--max-budget-usd` is not passed. The dispatcher fetches OpenRouter's price list at startup

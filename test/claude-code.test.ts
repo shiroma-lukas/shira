@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ResumeInput, StartInput } from "../src/contracts/adapter.js";
 import { Envelope, RepoConfig } from "../src/contracts/index.js";
-import { ClaudeCodeAdapter } from "../src/harness/claude-code.js";
+import { ClaudeCodeAdapter, maxBudgetArg } from "../src/harness/claude-code.js";
 import { FileTranscriptStore } from "../src/harness/transcripts.js";
 import { LocalSandboxProvider } from "../src/sandbox/local.js";
 import type { Sandbox } from "../src/sandbox/sandbox.js";
@@ -80,11 +80,20 @@ describe("ClaudeCodeAdapter", () => {
     });
   });
 
+  it("rounds the --max-budget-usd value down and never passes 0, which Claude Code rejects", () => {
+    expect(maxBudgetArg(2.5)).toBe("2.5000");
+    expect(maxBudgetArg(0.29)).toBe("0.2900");
+    expect(maxBudgetArg(0.01739)).toBe("0.0173");
+    expect(maxBudgetArg(0.004)).toBe("0.0040"); // toFixed(2) gave "0.00"
+    expect(maxBudgetArg(0.00004)).toBe("0.0001");
+    expect(maxBudgetArg(0)).toBe("0.0001");
+  });
+
   it("isolates the harness and enforces the remaining budget and tool allowlist", async () => {
     await run("done");
     const args = await lastArgs();
     for (const flag of ["--bare", "--strict-mcp-config", "--no-session-persistence"]) expect(args).toContain(flag);
-    expect(args[args.indexOf("--max-budget-usd") + 1]).toBe("2.50");
+    expect(args[args.indexOf("--max-budget-usd") + 1]).toBe("2.5000");
     expect(args[args.indexOf("--allowed-tools") + 1]).toBe("Read,Glob,Grep,Edit,Write,Bash");
     expect(args[args.indexOf("--permission-mode") + 1]).toBe("dontAsk");
     expect(args[args.indexOf("--append-system-prompt") + 1]).toBe("You are a worker.");
