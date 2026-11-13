@@ -69,3 +69,8 @@ retried and then fails the task.
   this as e.g. `$0.25 + unknown (2 unpriced runs)`. The monthly ceiling fails closed: it counts
   each such run at its task's whole dollar budget, and the dispatcher logs when that is what
   stopped it.
+- **Monthly ceiling.** `shira budget monthly <usd>` stops new tasks from being claimed once the
+  month's spend reaches it, and each run is also given at most what the month has left as its
+  dollar limit. A task stopped by that limit, with its own budget left, is paused rather than
+  failed (`shira resume` requeues it). Two runs starting at the same moment can each be given
+  the same remainder, so runs started together can overshoot the ceiling between them.

@@ -14,7 +14,7 @@ import {
 } from "../contracts/index.js";
 import type { LoadedConfig } from "../config/load.js";
 import type { Db } from "../db/client.js";
-import { exceededBudget, formatUsd, Ledger } from "../ledger/ledger.js";
+import { exceededBudget, formatUsd, Ledger, type Spend } from "../ledger/ledger.js";
 import { getDecision } from "../decisions/decisions.js";
 import { CheckpointStore } from "../queue/checkpoints.js";
 import { Settings } from "../queue/settings.js";
@@ -150,7 +150,8 @@ function pushCommand(branch: string, leaseSha?: string): string {
  * Budgets (FR-K2): time is enforced during the run (the session is cancelled at the limit).
  * Tokens and dollars are checked before each run, from the ledger. Dollars are also
  * enforced during the run by the adapter, between model API calls, so a run can overshoot
- * by one call. The monthly budget stops claims; runs in flight keep their task budgets.
+ * by one call. The monthly budget stops claims, and caps each run at what the month has
+ * left; a task stopped by that cap is paused, not failed.
  */
 export class Dispatcher {
   private readonly store: TaskStore;
@@ -348,6 +349,14 @@ export class Dispatcher {
       // Setup can take minutes; don't start the agent if the kill switch went on meanwhile.
       if (await this.settings.agentsPaused()) return (await this.pauseForKill(task, "before the run")).status;
 
+      // A run may spend no more than the month has left, so a run in flight can't carry spend
+      // past the monthly ceiling. Read just before the run, after setup: other runs may have
+      // started meanwhile, and those in flight count at their whole task budget (fail closed).
+      const monthLeft = await this.monthLeftUsd();
+      if (monthLeft !== null && monthLeft <= 0) return (await this.pauseForMonthlyBudget(task, "before the run", monthLeft)).status;
+      const taskLeft = task.budget.usd - spend.usd;
+      const monthCap = monthLeft !== null && monthLeft < taskLeft ? monthLeft : null;
+
       const { model, provider } = agent.model.primary;
       const run = await this.ledger.startRun({ taskId: task.id, role: task.role, harness: adapter.id, model });
       const input = {
@@ -359,7 +368,7 @@ export class Dispatcher {
         provider,
         instructions: await this.deps.instructions(agent.instructions),
         tools: agent.tools,
-        remaining: { usd: task.budget.usd - spend.usd },
+        remaining: { usd: monthCap ?? taskLeft },
         attachments,
       };
       const session = checkpoint
@@ -379,7 +388,13 @@ export class Dispatcher {
           // Same shape as the pre-run check, so `shira show` says what ran out and what was spent.
           // The harness stops runs only on dollars, and a stop can land a turn past the budget.
           const spent = await this.ledger.taskSpend(task.id);
-          const dimension = outcome.reason === "budget_exceeded" ? (exceededBudget(task.budget, spent) ?? "usd") : undefined;
+          const taskOver = exceededBudget(task.budget, spent);
+          // Stopped at the month's limit with the task's own budget left: the task did nothing
+          // wrong, so it waits for the next month or a higher ceiling instead of failing.
+          if (outcome.reason === "budget_exceeded" && monthCap !== null && !taskOver) {
+            return (await this.pauseForMonthlyBudget(task, "during the run", monthCap, spent)).status;
+          }
+          const dimension = outcome.reason === "budget_exceeded" ? (taskOver ?? "usd") : undefined;
           return (await this.fail(task, { reason: outcome.reason, dimension, spend: spent, detail: outcome.detail })).status;
         }
         if (outcome.reason === "config_error") {
@@ -401,6 +416,26 @@ export class Dispatcher {
   private pauseForKill(task: Task, stage: string) {
     this.log("kill switch: task paused", { task: task.id, stage });
     return this.store.transition(task.id, "paused", { actor: this.deps.owner, from: "running", payload: { reason: "kill switch", stage } });
+  }
+
+  /** Dollars left under the monthly ceiling, or null when there is none. */
+  private async monthLeftUsd(): Promise<number | null> {
+    const monthly = await this.settings.monthlyBudgetUsd();
+    if (monthly === null) return null;
+    return monthly - (await this.ledger.monthSpend()).usd;
+  }
+
+  /**
+   * Monthly ceiling (FR-K2): the task goes to `paused` without using a retry, keeping its own
+   * budget. `shira resume` requeues it once the month rolls over or the ceiling is raised.
+   */
+  private pauseForMonthlyBudget(task: Task, stage: string, monthLeftUsd: number, spend?: Spend) {
+    this.log("monthly budget: task paused", { task: task.id, stage });
+    return this.store.transition(task.id, "paused", {
+      actor: this.deps.owner,
+      from: "running",
+      payload: { reason: "monthly budget", stage, monthLeftUsd, ...(spend ? { spend } : {}) },
+    });
   }
 
   /** Waits for the run, renewing the lease, enforcing the time limit, and watching the kill switch. */
