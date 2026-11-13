@@ -178,6 +178,18 @@ function isConfigError(result: ResultEvent): boolean {
 }
 
 /**
+ * Why a run with a result produced no reply. Claude Code reports subtype "success" for some
+ * failures (auth and API errors, with is_error set), so that label is left out: it would read
+ * as "error: success: API Error ...". Real error subtypes (error_max_turns, ...) are kept.
+ */
+function failureDetail(result: Pick<ResultEvent, "subtype" | "is_error" | "result">): string {
+  const text = (result.result ?? "").trim().slice(0, 500);
+  if (result.subtype !== "success") return text ? `${result.subtype}: ${text}` : result.subtype;
+  if (result.is_error) return text || "failed without a message";
+  return text ? `finished without a structured reply: ${text}` : "finished without a structured reply";
+}
+
+/**
  * The repo's CLAUDE.md, relative to the workspace, if it has one. Claude Code reads it from
  * the repo root or `.claude/`; only the first found is passed.
  */
@@ -389,10 +401,8 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
     }
     if (!result) return { ...base, kind: "aborted", reason: "error", detail: `claude exited ${code} without a result: ${stderr.slice(-500)}` };
     if (result.subtype === "error_max_budget_usd") return { ...base, kind: "aborted", reason: "budget_exceeded" };
-    // Claude Code can report subtype "success" with is_error true (e.g. auth failures).
     if (result.is_error || !result.structured_output) {
-      const detail = `${result.subtype}: ${(result.result ?? "").slice(0, 500)}`;
-      return { ...base, kind: "aborted", reason: isConfigError(result) ? "config_error" : "error", detail };
+      return { ...base, kind: "aborted", reason: isConfigError(result) ? "config_error" : "error", detail: failureDetail(result) };
     }
 
     return { ...base, kind: "reply", reply: await this.toReply(s, result.structured_output) };

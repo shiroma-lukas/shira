@@ -144,7 +144,17 @@ describe("ClaudeCodeAdapter", () => {
   it("treats is_error as a failure even when subtype is success", async () => {
     const outcome = await run("auth_error");
     expect(outcome).toMatchObject({ kind: "aborted", reason: "error" });
-    expect(outcome.kind === "aborted" && outcome.detail).toMatch(/Not logged in/);
+    expect(outcome.kind === "aborted" && outcome.detail).toMatch(/^Not logged in/);
+  });
+
+  it("leaves Claude Code's misleading success label out of failure details", async () => {
+    const workspace = await run("workspace_error");
+    expect(workspace.kind === "aborted" && workspace.detail).toBe("API Error: 400 This API key is not scoped to a workspace");
+    const noReply = await run("no_reply");
+    expect(noReply).toMatchObject({ kind: "aborted", reason: "error" });
+    expect(noReply.kind === "aborted" && noReply.detail).toBe("finished without a structured reply: I made the change but forgot the reply format.");
+    const maxTurns = await run("max_turns");
+    expect(maxTurns.kind === "aborted" && maxTurns.detail).toBe("error_max_turns");
   });
 
   it("passes the agent's title through", async () => {

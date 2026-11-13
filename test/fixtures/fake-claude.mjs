@@ -65,6 +65,12 @@ switch (scenario) {
   case "rate_limited":
     result({ is_error: true, api_error_status: 429, result: "API Error: 429 rate limited", total_cost_usd: 0 });
     break;
+  case "no_reply":
+    result({ result: "I made the change but forgot the reply format." });
+    break;
+  case "max_turns":
+    result({ subtype: "error_max_turns", is_error: true, result: "" });
+    break;
   case "budget":
     result({ subtype: "error_max_budget_usd", is_error: true });
     break;
