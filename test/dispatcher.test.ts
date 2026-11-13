@@ -327,6 +327,23 @@ describe("Dispatcher", () => {
     expect(runs.rows).toEqual([{ outcome: "cancelled" }]);
   });
 
+  it("fails a run the harness stops on its dollar budget, recording the spend, without retrying", async () => {
+    const task = await store.create(newTask({ budget: { ...budget, usd: 0.05 } }), "cli:test");
+    const overrun: Step = async () => ({
+      kind: "aborted",
+      reason: "budget_exceeded",
+      usage: { model: "fake", inputTokens: 1000, outputTokens: 200, cacheReadTokens: 0, cacheWriteTokens: 0, usd: 0.08, durationMs: 1000 },
+      transcriptUri: "file:///t",
+      sessionRef: "s",
+    });
+    const r = await dispatcher(new ScriptedAdapter([overrun])).tick();
+    expect(r).toMatchObject({ status: "failed" });
+    const payload = (await store.events(task.id)).at(-1)?.payload;
+    expect(payload).toMatchObject({ reason: "budget_exceeded", dimension: "usd", spend: { usd: 0.08 } });
+    expect(host.prs).toHaveLength(0);
+    expect((await store.get(task.id))!.retriesUsed).toBe(0);
+  });
+
   it("fails a run that exceeds the time budget", async () => {
     const task = await store.create(newTask({ budget: { ...budget, minutes: 0.005 } }), "cli:test");
     const hang: Step = async ({ cancelled }) => {
