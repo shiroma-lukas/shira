@@ -401,6 +401,56 @@ describe("Dispatcher", () => {
     expect((await store.get(first.id))?.status).toBe("done");
   });
 
+  describe("caps a run at what the month has left", () => {
+    const monthCapped = async () => {
+      await store.create(newTask({ budget }), "cli:test");
+      await dispatcher(new ScriptedAdapter([fix])).tick(); // spends $0.10 of the month
+      await new Settings(db).setMonthlyBudgetUsd(1, "admin");
+      return store.create(newTask({ budget }), "cli:test");
+    };
+
+    it("passes the smaller of the task's and the month's remaining dollars to the harness", async () => {
+      await monthCapped();
+      let remaining = NaN;
+      const seeLimit: Step = async (input) => {
+        remaining = input.remaining.usd;
+        return fix(input);
+      };
+      await dispatcher(new ScriptedAdapter([seeLimit])).tick();
+      expect(remaining).toBeCloseTo(0.9);
+    });
+
+    it("pauses a task stopped at the month's limit, keeping its retries, instead of failing it", async () => {
+      const task = await monthCapped();
+      const overrun: Step = async () => ({
+        kind: "aborted",
+        reason: "budget_exceeded",
+        usage: { model: "fake", inputTokens: 1000, outputTokens: 200, cacheReadTokens: 0, cacheWriteTokens: 0, usd: 0.92, durationMs: 1000 },
+        transcriptUri: "file:///t",
+        sessionRef: "s",
+      });
+      expect(await dispatcher(new ScriptedAdapter([overrun])).tick()).toMatchObject({ status: "paused" });
+      const payload = (await store.events(task.id)).at(-1)?.payload;
+      expect(payload).toMatchObject({ reason: "monthly budget", stage: "during the run", spend: { usd: 0.92 } });
+      expect((await store.get(task.id))!.retriesUsed).toBe(0);
+      expect(host.prs).toHaveLength(1); // only the first task's
+    });
+
+    it("still fails a task that ran out of its own budget first", async () => {
+      await new Settings(db).setMonthlyBudgetUsd(100, "admin");
+      const task = await store.create(newTask({ budget: { ...budget, usd: 0.05 } }), "cli:test");
+      const overrun: Step = async () => ({
+        kind: "aborted",
+        reason: "budget_exceeded",
+        usage: { model: "fake", inputTokens: 1000, outputTokens: 200, cacheReadTokens: 0, cacheWriteTokens: 0, usd: 0.06, durationMs: 1000 },
+        transcriptUri: "file:///t",
+        sessionRef: "s",
+      });
+      expect(await dispatcher(new ScriptedAdapter([overrun])).tick()).toMatchObject({ status: "failed" });
+      expect((await store.events(task.id)).at(-1)?.payload).toMatchObject({ reason: "budget_exceeded", dimension: "usd" });
+    });
+  });
+
   it("counts runs with unknown cost at their task's budget toward the monthly ceiling", async () => {
     const task = await store.create(newTask({ budget }), "cli:test");
     const ledger = new Ledger(db);
