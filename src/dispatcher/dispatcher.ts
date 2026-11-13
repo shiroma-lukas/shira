@@ -147,10 +147,10 @@ function pushCommand(branch: string, leaseSha?: string): string {
  * Runs one task at a time from claim to PR (M1). Many dispatchers can run side by
  * side; the queue guarantees each task is claimed once.
  *
- * Budgets: time is enforced during the run (the session is cancelled at the limit).
- * Tokens and dollars are checked before each run, from the ledger. Stopping a run
- * mid-way on tokens or dollars needs streaming usage from the adapter and comes with
- * the first real adapter.
+ * Budgets (FR-K2): time is enforced during the run (the session is cancelled at the limit).
+ * Tokens and dollars are checked before each run, from the ledger. Dollars are also
+ * enforced during the run by the adapter, between model API calls, so a run can overshoot
+ * by one call. The monthly budget stops claims; runs in flight keep their task budgets.
  */
 export class Dispatcher {
   private readonly store: TaskStore;

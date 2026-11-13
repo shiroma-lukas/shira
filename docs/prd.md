@@ -181,7 +181,7 @@ Tags: **M0–M4** = the milestone a requirement ships in. **Later** = after M4. 
 ### 8.8 Cost Management
 
 - **FR-K1 (M1):** Ledger entry per run: task, role, harness, model, input, output, and cached tokens, dollars, duration, and outcome.
-- **FR-K2 (M1):** Per-task and per-role budgets (dollars, tokens, time, retries) with hard stops and escalation. A monthly org budget with a hard stop.
+- **FR-K2 (M1):** Per-task and per-role budgets (dollars, tokens, time, retries) with hard stops and escalation. A monthly org budget with a hard stop. A hard stop acts at the next check, so a stopped run can overshoot by what was already in flight, and each limit states its bound: dollars are checked between model API calls, so a run overshoots by at most one call; time is enforced during the run; tokens are checked before each run. The monthly budget stops new runs from starting; runs already in flight finish within their own task budgets.
 - **FR-K3 (M1 workers, M2 concierge and summaries, M4 architect):** Model tiering: small models for routing and summaries, mid-tier for workers, top tier only for the architect and hard cases.
 - **FR-K4 (M1):** Prompts are structured for caching, with a stable prefix.
 - **FR-K5 (M2):** Estimated cost shown in proposals before approval. After the task, estimated and actual cost are compared in the ledger.
@@ -266,7 +266,7 @@ No workflow engine until needed. At 10 to 20 concurrent tasks, a Postgres queue 
 | Time from approval to first PR | Approval timestamp to PR opened | Responsiveness | Baseline in M1 |
 | Broken-main incidents from agent PRs | Main fails CI after an agent PR merges | Safety of parallelism | Zero from M3 (merge queue); tracked from M1 |
 | Routing accuracy | Share of tasks finished by the first role assigned, without manual reassignment, checked against a weekly human-labeled sample | Router quality | Measured from M1 (rules); proposed 90% or higher for the M4 classifier |
-| Uncapped budget overruns | Runs that spent past a hard limit | Cost control | Zero |
+| Uncapped budget overruns | Runs that spent past a hard limit by more than its stated bound (FR-K2) | Cost control | Zero |
 | Context freshness | Share of context documents reviewed within their owner's agreed window | Context health | Tracked from M4 |
 | Estimate accuracy | Actual cost divided by proposal estimate | Trust in approvals | Within 2x for 80% of tasks by M3 |
 
