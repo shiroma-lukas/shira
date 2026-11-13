@@ -376,7 +376,11 @@ export class Dispatcher {
       if (stopped === "killed") return (await this.pauseForKill(task, "during the run")).status;
       if (outcome.kind === "aborted") {
         if (outcome.reason === "timeout" || outcome.reason === "budget_exceeded") {
-          return (await this.fail(task, { reason: outcome.reason, detail: outcome.detail })).status;
+          // Same shape as the pre-run check, so `shira show` says what ran out and what was spent.
+          // The harness stops runs only on dollars, and a stop can land a turn past the budget.
+          const spent = await this.ledger.taskSpend(task.id);
+          const dimension = outcome.reason === "budget_exceeded" ? (exceededBudget(task.budget, spent) ?? "usd") : undefined;
+          return (await this.fail(task, { reason: outcome.reason, dimension, spend: spent, detail: outcome.detail })).status;
         }
         if (outcome.reason === "config_error") {
           return (await this.failPermanently(task, `harness configuration: ${outcome.detail ?? "rejected"}`)).status;

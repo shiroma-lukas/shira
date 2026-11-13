@@ -3,7 +3,9 @@
 Control plane for delegating software work to a managed team of AI agents. Humans discuss,
 decide, and review; agents do the work and open pull requests. See the [PRD](docs/prd.md).
 
-**Status:** M1 in progress. The dispatcher runs the full loop (claim, sandbox, harness,
+**Status:** M1 complete; M2 in progress. Real bugs have been fixed end to end from the CLI (on a
+playground repo and on Shira itself), and a budget hard stop has been shown failing a task
+mid-run without opening a PR. The dispatcher runs the full loop (claim, sandbox, harness,
 checkpoint and resume, rebase and test gate, secret scan, PR) and is tested end to end against
 a scripted harness and a local, unisolated sandbox. The Claude Code adapter runs headless
 (`claude -p --bare`) with redacted transcripts, and repositories are reached through a
